@@ -1,0 +1,191 @@
+from .BasicScene import BaseScene
+from isaacsim import SimulationApp
+from ati_config import ATIBaseConfig
+from pxr import UsdGeom, Gf, Sdf, UsdPhysics, UsdLux
+
+from isaacsim.core.utils.stage import add_reference_to_stage
+import omni.replicator.core as rep
+import omni
+import carb
+import carb.settings
+import numpy as np
+from itertools import cycle
+import os
+
+from isaacsim.robot.wheeled_robots.controllers.holonomic_controller import HolonomicController
+from isaacsim.robot.wheeled_robots.robots import WheeledRobot
+from isaacsim.robot.wheeled_robots.robots.holonomic_robot_usd_setup import HolonomicRobotUsdSetup
+
+DEBUG = False
+
+class ATIDepthScene(BaseScene):
+    def __init__(
+        self,
+        simulation_app: SimulationApp,
+        config: ATIBaseConfig,
+        physics_dt: float = 1 / 60,
+        rendering_dt: float = 1 / 60, 
+        stage_units_in_meters=1.0,
+        seed: int = 20260319
+    ):
+        super().__init__(
+            simulation_app=simulation_app,
+            config=config,
+            physics_dt=physics_dt,
+            rendering_dt=rendering_dt,
+            stage_units_in_meters=stage_units_in_meters,
+            seed=seed
+        )
+
+        ## Robot Control Code
+        if DEBUG: print("[DEBUG] Checking Holonomic Robot Prim Path:", self.agent.prim_path)
+        kaya_setup = HolonomicRobotUsdSetup(
+            robot_prim_path=self.agent.prim_path, 
+            com_prim_path=f"{self.agent.prim_path}/base_link/control_offset"
+        )
+        (
+            wheel_radius,
+            wheel_positions,
+            wheel_orientations,
+            mecanum_angles,
+            wheel_axis,
+            up_axis,
+        ) = kaya_setup.get_holonomic_controller_params()
+        
+        ## Robot Controlling 
+        # Velocity Control Vector: [ linear v_x, linear v_y, angular w_z ] 
+        self.agent_controller = HolonomicController(
+            name="holonomic_controller",
+            wheel_radius=wheel_radius,
+            wheel_positions=wheel_positions,
+            wheel_orientations=wheel_orientations,
+            mecanum_angles=mecanum_angles,
+            wheel_axis=wheel_axis,
+            up_axis=up_axis,
+        )
+        self.world.reset()
+        self.agent_controller.reset()
+        
+        self.R = 3.0
+        self.__warmup_rendering = 5
+
+    def reset(self):
+        super().reset()
+        self.agent_controller.reset()
+
+    def get_anno(self, anno_name):
+        return self.RENDERING_ANNOTATOR_TYPES[anno_name]
+
+    def __mb_exposure_time_to_frame(self, exposure_time):
+        target_dt = self.physics_dt if self.rendering_mode == "pathtracing" else self.rendering_dt
+        _delta_shutter = int(1. / target_dt) * exposure_time
+        shutter_open_time = - _delta_shutter / 2.
+        shutter_close_time = _delta_shutter / 2.
+        return shutter_open_time, shutter_close_time
+
+    def sensor_control(
+        self, 
+        sensor_name="agent_camera", 
+        control_parameters: dict=None
+    ):
+        """
+        You should control your camera(sensor) parameters here only.
+        For now, I'll implement the control logic for...
+        ISO, Shutter Time, Aperture
+        """
+        cam_real_prim_path = f"{self.agent_camera_prim_path}/{self.agent_perspective_cam_prim_path}"
+        cam_prim = self.world.stage.GetPrimAtPath(cam_real_prim_path)
+        cam_prim.ApplyAPI("OmniRtxCameraExposureAPI_1")
+        if not cam_prim.IsValid():
+            print("[Error] There is something going wrong....")
+            raise ValueError(f"Camera prim path {cam_real_prim_path} is not valid.")
+        
+        target_iso = control_parameters.get("iso", None)
+        if target_iso is None:
+            if DEBUG: print("[Warning] No ISO value provided in control_parameters. Skipping ISO control.")
+        else:
+            if DEBUG: print(f"[DEBUG] Setting ISO of {sensor_name} to {target_iso}")
+            cam_prim.GetAttribute("exposure:iso").Set(target_iso)
+        
+        target_shutter_time = control_parameters.get("shutter_time", None)
+        if target_shutter_time is None:
+            if DEBUG: print("[Warning] No shutter_time value provided in control_parameters. Skipping shutter time control.")
+        else:
+            # shutter time control must be done simultaneously in both exposure:time, shutter:open/close attributes
+            # exposure:time is for "brightness"
+            # shutter:open/close is for motion blur effect, and the time difference between open and close determines the amount of motion blur
+            open_time, close_time = self.__mb_exposure_time_to_frame(target_shutter_time)
+            self.cameras[sensor_name].set_shutter_properties(
+                delay_open=open_time,
+                delay_close=close_time
+            )
+            cam_prim.GetAttribute("exposure:time").Set(target_shutter_time)
+            
+        target_aperture = control_parameters.get("aperture", None)
+        if target_aperture is None:
+            if DEBUG: print("[Warning] No aperture value provided in control_parameters. Skipping aperture control.")
+        else:
+            cam_prim.GetAttribute("exposure:fStop").Set(target_aperture)
+            self.cameras[sensor_name].set_lens_aperture(target_aperture)    
+        return 
+    
+    def robot_control(
+        self, 
+        time, 
+        control_parameters: dict = None
+    ):
+        """
+        Agent(Robot) Control or Navigation Logic must be here.
+        """
+        omega = control_parameters.get("angular_velocity", 0.5)
+        vx_w = -self.R * omega * np.sin(omega * time)
+        vy_w =  self.R * omega * np.cos(omega * time)
+        
+        self.agent.apply_wheel_actions(self.agent_controller.forward(command=[vx_w, vy_w, omega]))
+        return 
+    
+    def spawn_random_objects(self, min_dist_from_agent=4):
+        car_prim = self.world.stage.GetPrimAtPath(self.agent_prim_path)
+        car_loc = car_prim.GetAttribute("xformOp:translate").Get()
+        for s_obj, num in self.single_object_usd_paths:
+            for i in range(num):
+                add_reference_to_stage(usd_path=self.assets_root_path + s_obj, prim_path=f"/World/Dolly_{i}")
+                
+                # Pose Randomization for Dolly
+                dolly_prim = self.world.stage.GetPrimAtPath(f"/World/Dolly_{i}")
+                if not dolly_prim.GetAttribute("xformOp:translate"):
+                    UsdGeom.Xformable(dolly_prim).AddTranslateOp()
+                if not dolly_prim.GetAttribute("xformOp:rotateXYZ"):
+                    UsdGeom.Xformable(dolly_prim).AddRotateXYZOp()        
+                self._object_spawn_randomization(
+                    dolly_prim, 
+                    agent_pos=car_loc, 
+                    min_dist_from_agent=min_dist_from_agent
+                )
+
+        for p_obj, num in self.props_object_usd_paths:
+            props_urls = []
+            props_folder_path = self.assets_root_path + p_obj
+            result, entries = omni.client.list(props_folder_path)
+            if result != omni.client.Result.OK:
+                carb.log_error(f"Could not list assets in path: {props_folder_path}")
+            for entry in entries:
+                _, ext = os.path.splitext(entry.relative_path)
+                if ext == ".usd":
+                    props_urls.append(f"{props_folder_path}/{entry.relative_path}")
+            
+            min_dist_from_car_props = 1
+            cycled_props_url = cycle(props_urls)
+            for i in range(num):
+                prop_url = next(cycled_props_url)
+                prop_name = os.path.splitext(os.path.basename(prop_url))[0]
+                path = f"/World/Props/Prop_{prop_name}_{i}"
+                prim = self.world.stage.DefinePrim(path, "Xform")
+                prim.GetReferences().AddReference(prop_url)
+                self._object_spawn_randomization(
+                    obj_prim=prim, 
+                    agent_pos=car_loc, 
+                    min_dist_from_agent=min_dist_from_car_props
+                )
+        
+        return 
