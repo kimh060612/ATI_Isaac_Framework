@@ -46,10 +46,10 @@ class ATIBaseConfig:
             "motion_vectors"
         ]
         self.single_object_usd_paths = [
-            ("/Isaac/Props/Dolly/dolly.usd", 5),
+            ("/Isaac/Props/Dolly/dolly.usd", 0),
         ]
         self.props_object_usd_paths = [
-            ("/Isaac/Props/YCB/Axis_Aligned_Physics", 30),
+            ("/Isaac/Props/YCB/Axis_Aligned_Physics", 40),
         ]
         self.external_cameras: List[Tuple[str, str, np.ndarray, np.ndarray]] = [ # camera name, prim path, position, target position
             (
@@ -86,6 +86,10 @@ class ATIBaseConfig:
         if mode not in ["realtime", "pathtracing"]:
             raise ValueError(f"Unsupported rendering mode: {mode}. Supported modes are 'realtime' and 'pathtracing'.")
         self.rendering_mode = mode
+    
+    def set_pathtracing_param(self, spp, num_subsamples):
+        self.pt_spp = spp
+        self.num_subsamples = num_subsamples
     
     def set_random_obj_spawn(self, spawn_random_objs: bool):
         self.spawn_random_objs = spawn_random_objs

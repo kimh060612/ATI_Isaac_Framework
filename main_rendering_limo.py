@@ -73,7 +73,8 @@ if __name__ == "__main__":
         name="ati_rendering_limo_test",
         robot_config=limo_config,
     )
-    scene_config.set_rendering_mode("realtime")
+    scene_config.set_rendering_mode("pathtracing") # "pathtracing" or "realtime"
+    scene_config.set_pathtracing_param(spp=128, num_subsamples=16) # Only effective when rendering_mode is "pathtracing"
     scene_config.set_random_obj_spawn(True)
     limo_scene = ATIDepthScene(
         simulation_app,
