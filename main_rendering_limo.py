@@ -39,18 +39,6 @@ def save_status(lap_idx, iso_idx, st_idx, speed_idx, light_idx, ONE_LAP_PERIOD, 
     with open(os.path.join(DATA_SAVE_PATH, "status_log.txt"), "a") as f:
         f.write(f"step: {lap_idx*ONE_LAP_PERIOD + 1} ~ {(lap_idx + 1) * ONE_LAP_PERIOD} | lap_idx: {lap_idx} | iso_idx: {iso_idx} | shutter_time_idx: {st_idx} | speed_idx: {speed_idx} | light_intensity_idx: {light_idx} | duration: {d_time:.2f} seconds\n")
 
-def simple_speed_control(lap_idx):
-    if lap_idx < 10:
-        return 1, 1
-    elif lap_idx < 20:
-        return 0, 2
-    elif lap_idx < 30:
-        return 1, 0
-    elif lap_idx < 40:
-        return 1, 1
-    else:
-        return 0, 0
-
 def calculate_next_step(
     v_line, 
     radius, 
