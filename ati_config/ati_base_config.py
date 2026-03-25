@@ -17,7 +17,9 @@ class ATIBaseConfig:
     pt_spp: int = 128  
     num_subsamples: int = 16  # Samples per pixel for path tracing
     
-    scene_usd: str = "/Isaac/Environments/Simple_Warehouse/full_warehouse.usd"
+    scene_usd: str = "/Isaac/Environments/Simple_Warehouse/warehouse.usd"
+    # "/Isaac/Environments/Grid/default_environment.usd"
+    # "/Isaac/Environments/Simple_Warehouse/full_warehouse.usd" -> Warehouse full
     agent_prim_path = "/World/Agent"
     agent_usd_path = "/Isaac/Robots/NVIDIA/Kaya/kaya.usd"
     agent_camera_usd_path = "/Isaac/Sensors/Intel/RealSense/rsd455.usd"

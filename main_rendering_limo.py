@@ -17,7 +17,7 @@ CONFIG = {
     "display_options": 3286,
 }
 simulation_app = SimulationApp(launch_config=CONFIG)
-from ati_research.ati_isaac_framework.ati_utils.log_utils import configure_isaac_sim_logging
+from ati_utils.log_utils import configure_isaac_sim_logging
 
 # Enable Livestream extension
 from isaacsim.core.utils.extensions import enable_extension
@@ -33,7 +33,7 @@ import numpy as np
 import random
 import os
 
-DATA_SAVE_PATH = "/home/ati/ATI_research/dataset/test_isaacsim_sdg/data/limo_rendering_pt" # mb_iso_tradeoff_subsample16_camerafps
+DATA_SAVE_PATH = "/issac-sim/dataset/experiment_isaac_rendering/limo_rendering_pt" # mb_iso_tradeoff_subsample16_camerafps
 
 def save_status(lap_idx, iso_idx, st_idx, speed_idx, light_idx, ONE_LAP_PERIOD, d_time=None):
     with open(os.path.join(DATA_SAVE_PATH, "status_log.txt"), "a") as f:
@@ -74,7 +74,7 @@ if __name__ == "__main__":
         robot_config=limo_config,
     )
     scene_config.set_rendering_mode("realtime")
-    scene_config.set_random_obj_spawn(False)
+    scene_config.set_random_obj_spawn(True)
     limo_scene = ATIDepthScene(
         simulation_app,
         config=scene_config,
@@ -107,7 +107,7 @@ if __name__ == "__main__":
     line_speed_idx = 0
     light_idx = 2
     
-    R = 0.4 # (m) The radius of the circular trajectory. The linear velocity will determine the angular velocity.
+    R = 0.35 # (m) The radius of the circular trajectory. The linear velocity will determine the angular velocity.
     w_ang, T, NUM_ONE_LAP_STEPS = calculate_next_step(
         agent_linear_context[line_speed_idx], 
         R, 1. / scene_config.agent_camera_fps
@@ -125,8 +125,6 @@ if __name__ == "__main__":
     VERBOSE = False
     try:
         while simulation_app._app.is_running() and not simulation_app.is_exiting():
-            syn_data = limo_scene.step(render=True)
-            print(f"Step: {step}, Simulation Time: {limo_scene.get_simulation_current_time:.4f} seconds")
             limo_scene.robot_control(
                 time=limo_scene.get_simulation_current_time,
                 control_parameters={
@@ -134,6 +132,8 @@ if __name__ == "__main__":
                     "angular_velocity": w_ang
                 }
             )
+            syn_data = limo_scene.step(render=True)
+            print(f"Step: {step}, Simulation Time: {limo_scene.get_simulation_current_time:.4f} seconds")
             rgb_data: np.array = syn_data.get("rgb", None)
             depth_data: np.array = syn_data.get(limo_scene.get_anno("depth"), None)
             bbox_data: np.array = syn_data.get(limo_scene.get_anno("2d_bounding_box"), None)

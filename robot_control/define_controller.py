@@ -1,6 +1,7 @@
 from isaacsim.robot.wheeled_robots.controllers.holonomic_controller import HolonomicController
 from isaacsim.robot.wheeled_robots.robots.holonomic_robot_usd_setup import HolonomicRobotUsdSetup
 from isaacsim.robot.wheeled_robots.controllers.differential_controller import DifferentialController
+from robot_control import CircularController
 from ati_config import ATIBaseRobotConfig
 
 def define_agent_controller(
@@ -32,14 +33,20 @@ def define_agent_controller(
             up_axis=up_axis,
         )
     elif agent_name == "limo":
-        agent_controller = DifferentialController(
-            name="limo_diff_controller",
+        agent_controller = CircularController(
+            name="limo_circular_controller",
             wheel_radius=robot_config.wheelRadius,
-            wheel_base=robot_config.wheelDistance, 
-            max_angular_speed=robot_config.maxLinearSpeed / robot_config.wheelRadius,
-            max_linear_speed=robot_config.maxLinearSpeed,
-            max_wheel_speed=robot_config.maxLinearSpeed / robot_config.wheelRadius
+            wheel_base=robot_config.wheelDistance,
         )
+        
+        # DifferentialController(
+        #     name="limo_diff_controller",
+        #     wheel_radius=robot_config.wheelRadius,
+        #     wheel_base=robot_config.wheelDistance, 
+        #     max_angular_speed=robot_config.maxLinearSpeed / robot_config.wheelRadius,
+        #     max_linear_speed=robot_config.maxLinearSpeed,
+        #     max_wheel_speed=robot_config.maxLinearSpeed / robot_config.wheelRadius
+        # )
     else:
         raise ValueError(f"Unsupported agent name: {agent_name}. Supported agents are 'kaya' and 'limo'.")
 

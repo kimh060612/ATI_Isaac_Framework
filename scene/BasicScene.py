@@ -377,7 +377,7 @@ class BaseScene(metaclass=ABCMeta):
             robot_type=self.robot_config.robot_name,
             robot_name="my_agent",
             robot_usd_path=robot_usd_path,
-            initial_position=np.array([-3.0, -3.0, 0.02]),
+            initial_position=np.array([0.0, 0.0, 0.02]), # -3.0, -3.0
             initial_orientation=np.array([1.0, 0.0, 0.0, 0.0]),
             **kwargs
         )

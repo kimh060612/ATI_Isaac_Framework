@@ -125,25 +125,19 @@ class ATIDepthScene(BaseScene):
         if self.robot_config.robot_name == "limo":
             linear_vel = control_parameters["linear_velocity"]
             angular_vel = control_parameters["angular_velocity"]
-            wheel_action = self.agent_controller.forward(command=[linear_vel, angular_vel])
-            full_joint_velocities = np.zeros(self.agent.num_dof, dtype=np.float32)
-            left_w = wheel_action.joint_velocities[0]
-            right_w = wheel_action.joint_velocities[1]
             
             # print(f"[Robot Control] time: {time:.2f}, linear_vel: {linear_vel:.2f}, angular_vel: {angular_vel:.2f}, left_w: {left_w:.2f}, right_w: {right_w:.2f}")
             left_front_idx  = self.agent.get_dof_index("front_left_wheel")
             right_front_idx = self.agent.get_dof_index("front_right_wheel")
             left_rear_idx   = self.agent.get_dof_index("rear_left_wheel")
             right_rear_idx  = self.agent.get_dof_index("rear_right_wheel")
-
-            full_joint_velocities[left_rear_idx] = left_w
-            full_joint_velocities[left_front_idx] = left_w
-            full_joint_velocities[right_rear_idx] = right_w
-            full_joint_velocities[right_front_idx] = right_w
-            action = ArticulationAction(
-                joint_velocities=full_joint_velocities
-            )
-            self.agent.apply_action(action)
+            self.agent.apply_action(self.agent_controller.forward(
+                command={
+                    "linear_velocity": linear_vel,
+                    "angular_velocity": angular_vel
+                },
+                wheel_idx=[left_front_idx, left_rear_idx, right_front_idx, right_rear_idx]
+            ))
 
         elif self.robot_config.robot_name == "kaya":
             omega = control_parameters["angular_velocity"]
@@ -154,7 +148,7 @@ class ATIDepthScene(BaseScene):
         
         return 
     
-    def spawn_random_objects(self, min_dist_from_agent=4):
+    def spawn_random_objects(self, min_dist_from_agent=6.0):
         car_prim = self.world.stage.GetPrimAtPath(self.agent_prim_path)
         car_loc = car_prim.GetAttribute("xformOp:translate").Get()
         for s_obj, num in self.single_object_usd_paths:
