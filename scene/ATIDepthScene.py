@@ -12,11 +12,10 @@ import numpy as np
 from itertools import cycle
 import os
 
-from isaacsim.robot.wheeled_robots.controllers.holonomic_controller import HolonomicController
-from isaacsim.robot.wheeled_robots.robots import WheeledRobot
-from isaacsim.robot.wheeled_robots.robots.holonomic_robot_usd_setup import HolonomicRobotUsdSetup
+from isaacsim.core.utils.types import ArticulationAction
+from robot_control.define_controller import define_agent_controller
 
-DEBUG = False
+DEBUG = True
 
 class ATIDepthScene(BaseScene):
     def __init__(
@@ -39,31 +38,14 @@ class ATIDepthScene(BaseScene):
 
         ## Robot Control Code
         if DEBUG: print("[DEBUG] Checking Holonomic Robot Prim Path:", self.agent.prim_path)
-        kaya_setup = HolonomicRobotUsdSetup(
-            robot_prim_path=self.agent.prim_path, 
-            com_prim_path=f"{self.agent.prim_path}/base_link/control_offset"
+        self.agent_controller = define_agent_controller(
+            agent_name=self.robot_config.robot_name,
+            agent_prim_path=self.agent.prim_path,
+            robot_config=self.robot_config
         )
-        (
-            wheel_radius,
-            wheel_positions,
-            wheel_orientations,
-            mecanum_angles,
-            wheel_axis,
-            up_axis,
-        ) = kaya_setup.get_holonomic_controller_params()
-        
-        ## Robot Controlling 
-        # Velocity Control Vector: [ linear v_x, linear v_y, angular w_z ] 
-        self.agent_controller = HolonomicController(
-            name="holonomic_controller",
-            wheel_radius=wheel_radius,
-            wheel_positions=wheel_positions,
-            wheel_orientations=wheel_orientations,
-            mecanum_angles=mecanum_angles,
-            wheel_axis=wheel_axis,
-            up_axis=up_axis,
-        )
-        self.world.reset()
+        # world.reset() is now called inside build_scene() (before warmup).
+        # Calling it again here would invalidate the PhysX SimView handles that
+        # were just created, causing "Simulation view object is invalidated" errors.
         self.agent_controller.reset()
         
         self.R = 3.0
@@ -93,7 +75,10 @@ class ATIDepthScene(BaseScene):
         For now, I'll implement the control logic for...
         ISO, Shutter Time, Aperture
         """
-        cam_real_prim_path = f"{self.agent_camera_prim_path}/{self.agent_perspective_cam_prim_path}"
+        if self.config.require_external_camera:
+            cam_real_prim_path = f"{self.agent_camera_prim_path}/{self.agent_perspective_cam_prim_path}"
+        else:
+            cam_real_prim_path = self.agent_camera_prim_path
         cam_prim = self.world.stage.GetPrimAtPath(cam_real_prim_path)
         cam_prim.ApplyAPI("OmniRtxCameraExposureAPI_1")
         if not cam_prim.IsValid():
@@ -137,11 +122,36 @@ class ATIDepthScene(BaseScene):
         """
         Agent(Robot) Control or Navigation Logic must be here.
         """
-        omega = control_parameters.get("angular_velocity", 0.5)
-        vx_w = -self.R * omega * np.sin(omega * time)
-        vy_w =  self.R * omega * np.cos(omega * time)
+        if self.robot_config.robot_name == "limo":
+            linear_vel = control_parameters["linear_velocity"]
+            angular_vel = control_parameters["angular_velocity"]
+            wheel_action = self.agent_controller.forward(command=[linear_vel, angular_vel])
+            full_joint_velocities = np.zeros(self.agent.num_dof, dtype=np.float32)
+            left_w = wheel_action.joint_velocities[0]
+            right_w = wheel_action.joint_velocities[1]
+            
+            # print(f"[Robot Control] time: {time:.2f}, linear_vel: {linear_vel:.2f}, angular_vel: {angular_vel:.2f}, left_w: {left_w:.2f}, right_w: {right_w:.2f}")
+            left_front_idx  = self.agent.get_dof_index("front_left_wheel")
+            right_front_idx = self.agent.get_dof_index("front_right_wheel")
+            left_rear_idx   = self.agent.get_dof_index("rear_left_wheel")
+            right_rear_idx  = self.agent.get_dof_index("rear_right_wheel")
+
+            full_joint_velocities[left_rear_idx] = left_w
+            full_joint_velocities[left_front_idx] = left_w
+            full_joint_velocities[right_rear_idx] = right_w
+            full_joint_velocities[right_front_idx] = right_w
+            action = ArticulationAction(
+                joint_velocities=full_joint_velocities
+            )
+            self.agent.apply_action(action)
+
+        elif self.robot_config.robot_name == "kaya":
+            omega = control_parameters["angular_velocity"]
+            vx_w = -self.R * omega * np.sin(omega * time)
+            vy_w =  self.R * omega * np.cos(omega * time)
+            
+            self.agent.apply_wheel_actions(self.agent_controller.forward(command=[vx_w, vy_w, omega]))
         
-        self.agent.apply_wheel_actions(self.agent_controller.forward(command=[vx_w, vy_w, omega]))
         return 
     
     def spawn_random_objects(self, min_dist_from_agent=4):

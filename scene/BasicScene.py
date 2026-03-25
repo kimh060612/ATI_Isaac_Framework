@@ -29,6 +29,7 @@ from isaacsim.core.utils.viewports import set_camera_view
 
 from isaacsim.robot.wheeled_robots.controllers.holonomic_controller import HolonomicController
 from isaacsim.robot.wheeled_robots.robots import WheeledRobot
+from isaacsim.core.prims import SingleArticulation
 from isaacsim.robot.wheeled_robots.robots.holonomic_robot_usd_setup import HolonomicRobotUsdSetup
 from isaacsim.sensors.camera import Camera
 
@@ -62,6 +63,7 @@ class BaseScene(metaclass=ABCMeta):
         
         self.sim_app = simulation_app
         self.config = config
+        self.robot_config = config.robot_config
         self.rendering_mode = config.rendering_mode
         self.capture_motion_blur = config.capture_motion_blur
         self.physics_dt = physics_dt
@@ -77,7 +79,7 @@ class BaseScene(metaclass=ABCMeta):
         self.__reset_needed = False
         self.__warmup_steps = 60
         
-        self.__capture_on_play = True # if self.rendering_mode == "realtime" else True
+        self.__capture_on_play = True
         
         # Control simulation timeline for rendering control based on shutter time parameter.
         # You can configure these parameters by configuration file (YAML).
@@ -94,9 +96,11 @@ class BaseScene(metaclass=ABCMeta):
         self.external_cameras = config.external_cameras
         self.single_object_usd_paths = config.single_object_usd_paths
         self.props_object_usd_paths = config.props_object_usd_paths
+        self.wheel_indices = None
         
         random.seed(seed)
         np.random.seed(seed)
+        os.environ["PYTHONHASHSEED"] = str(seed)
         # Scene will be built simultaneously when the class is initialized, so no need to call build_scene() separately in main_rendering_test.py
         self.build_scene()
         
@@ -152,7 +156,7 @@ class BaseScene(metaclass=ABCMeta):
         target_physics_fps = 1 / self.physics_dt
         if self.config.rendering_mode == "pathtracing":
             target_physics_fps *= self.config.num_subsamples
-            # self.physics_dt /= self.config.num_subsamples
+            self.physics_dt /= self.config.num_subsamples
             # Check if the physics FPS needs to be increased to match the custom delta time
         orig_physics_fps = physx_scene.GetTimeStepsPerSecondAttr().Get()
         if target_physics_fps > orig_physics_fps:
@@ -186,6 +190,9 @@ class BaseScene(metaclass=ABCMeta):
             self.spawn_random_objects(min_dist_from_agent=4)
         
         self.__rendering_settings()
+        # ── Physics must be initialized (world.reset) BEFORE any tensor API use ──
+        # Standard Isaac Sim pattern: add prims → world.reset() → warmup steps → play
+        self.world.reset()
         print("[Main] Waiting for assets to load...")
         for _ in range(self.__warmup_steps):
             self.sim_app.update()
@@ -195,7 +202,6 @@ class BaseScene(metaclass=ABCMeta):
         print("[Timeline] Timeline setup for rendering control")
         self._timeline = omni.timeline.get_timeline_interface()
         self._timeline.set_current_time(0.0)
-        self._timeline.set_time_codes_per_second(int(1. / self.physics_dt))
         self._timeline.play()
         self._timeline.commit()
         self._previous_time = 0.0
@@ -317,7 +323,7 @@ class BaseScene(metaclass=ABCMeta):
         initial_orientation: np.array,
         **kwargs
     ):
-        if robot_type == "wheeled":
+        if robot_type == "kaya":
             robot_agent = self.world.scene.add(
                 WheeledRobot(
                     prim_path=self.agent_prim_path,
@@ -332,6 +338,17 @@ class BaseScene(metaclass=ABCMeta):
                     orientation=initial_orientation,
                 )
             )
+        elif robot_type == "limo":
+            add_reference_to_stage(usd_path=robot_usd_path, prim_path=self.agent_prim_path)
+            robot_agent = SingleArticulation(
+                prim_path=self.agent_prim_path,
+                name=robot_name,
+                position=initial_position,
+                orientation=initial_orientation,
+            )
+            self.world.scene.add(robot_agent)
+            wheel_joint_names = kwargs.get("wheel_joint_names", [])
+            self.wheel_indices = [robot_agent.get_dof_index(name) for name in wheel_joint_names]
         else:
             raise ValueError(f"Unsupported robot type: {robot_type}")
         return robot_agent
@@ -350,18 +367,25 @@ class BaseScene(metaclass=ABCMeta):
             raise e
         
         # Robot Definition Part: This need to be generalized into various robot class.
+        robot_usd_path = self.agent_usd_path if self.robot_config.custom_robot else self.assets_root_path + self.agent_usd_path
+        kwargs = {}
+        if self.robot_config.robot_name == "kaya":
+            kwargs["wheel_dof_names"] = ["axle_0_joint", "axle_1_joint", "axle_2_joint"]
+        elif self.robot_config.robot_name == "limo":
+            kwargs["wheel_joint_names"] = [*self.robot_config.front_jointNames, *self.robot_config.rear_jointNames]
         self.agent = self._define_robot_agent(
-            robot_type="wheeled",
+            robot_type=self.robot_config.robot_name,
             robot_name="my_agent",
-            robot_usd_path=self.assets_root_path + self.agent_usd_path,
-            initial_position=np.array([0, 0.0, 0.02]),
+            robot_usd_path=robot_usd_path,
+            initial_position=np.array([-3.0, -3.0, 0.02]),
             initial_orientation=np.array([1.0, 0.0, 0.0, 0.0]),
-            wheel_dof_names=["axle_0_joint", "axle_1_joint", "axle_2_joint"]
+            **kwargs
         )
         
         self.agent_camera = self._define_agent_camera(
             self.agent_camera_prim_path, 
-            self.assets_root_path + self.agent_camera_usd_path
+            self.assets_root_path + self.agent_camera_usd_path,
+            self.config.require_external_camera
         )
         
         # --- Create overhead camera ---
@@ -442,29 +466,36 @@ class BaseScene(metaclass=ABCMeta):
         self,
         camera_prim_path: str, 
         camera_usd_path: Union[str, None] = None,
+        require_external_camera: bool = True
     ):
-        # Define camera prim for agent perspective view. This camera will be attached to the robot agent and will move together with the agent.
-        if camera_usd_path is None:
-            # Create a default pinhole camera if no USD path is provided
-            agent_camera = UsdGeom.Camera.Define(self.world.stage, camera_prim_path)
-            agent_camera.CreateFocalLengthAttr(35.0)
-            agent_camera.CreateHorizontalApertureAttr(32.0)
-            agent_camera.CreateVerticalApertureAttr(18.0)
+        if require_external_camera:
+            # Define camera prim for agent perspective view. This camera will be attached to the robot agent and will move together with the agent.
+            if camera_usd_path is None:
+                # Create a default pinhole camera if no USD path is provided
+                agent_camera = UsdGeom.Camera.Define(self.world.stage, camera_prim_path)
+                agent_camera.CreateFocalLengthAttr(35.0)
+                agent_camera.CreateHorizontalApertureAttr(32.0)
+                agent_camera.CreateVerticalApertureAttr(18.0)
+            else:
+                prim_utils.create_prim(
+                    camera_prim_path, "Xform",
+                    translation=(0.1, 0.0, 0.1),
+                )  # reference를 걸 컨테이너
+                agent_camera = add_reference_to_stage(usd_path=camera_usd_path, prim_path=camera_prim_path)
+            
+            # For ease of controlling the agent camera parameters, we used native camera class in Isaac Sim.
+            cam_real_prim_path = f"{camera_prim_path}/{self.agent_perspective_cam_prim_path}"
+            cam_rel_position = np.array([0.1, 0.0, 0.1])
         else:
-            prim_utils.create_prim(
-                camera_prim_path, "Xform",
-                translation=(0.1, 0.0, 0.1),
-            )  # reference를 걸 컨테이너
-            agent_camera = add_reference_to_stage(usd_path=camera_usd_path, prim_path=camera_prim_path)
-        
-        # For ease of controlling the agent camera parameters, we used native camera class in Isaac Sim.
-        cam_real_prim_path = f"{camera_prim_path}/{self.agent_perspective_cam_prim_path}"
-        
+            # This case, the agent USD natively supports RGB(-D) camera on the platform.
+            cam_real_prim_path = camera_prim_path
+            cam_rel_position = None
+
         self.cameras["agent_camera"] = Camera(
             prim_path=cam_real_prim_path,
             frequency=self.agent_camera_fps,
             resolution=self.agent_camera_resolution,
-            position=np.array([0.1, 0.0, 0.1]),
+            position=cam_rel_position,
             annotator_device="cpu"
         )
         self.cameras["agent_camera"].initialize(attach_rgb_annotator=True) # 
@@ -519,3 +550,18 @@ class BaseScene(metaclass=ABCMeta):
         except Exception as e:
             print(f"[Viewport] Error: {e}")
     
+
+
+
+# # ── Agent prim에 붙어 있는 Camera prim path 자동 탐색 ─────────────────────
+#         agent_prim = self.world.stage.GetPrimAtPath(self.agent_prim_path)
+#         discovered_cam_path = None
+#         if agent_prim.IsValid():
+#             for prim in Usd.PrimRange(agent_prim):
+#                 if prim.IsA(UsdGeom.Camera):
+#                     discovered_cam_path = str(prim.GetPath())
+#                     print(f"[Camera] Agent prim 하위에서 Camera prim 발견: {discovered_cam_path}")
+#                     break
+#         if discovered_cam_path is None:
+#             print(f"[Camera] Agent prim({self.agent_prim_path}) 하위에 Camera prim 없음. 설정값 사용: {cam_real_prim_path}")
+#         # ─────────────────────────────────────────────────────────────────────────

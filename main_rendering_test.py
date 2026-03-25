@@ -24,7 +24,7 @@ enable_extension("omni.services.livestream.nvcf")
 # Scene Building
 from ati_utils.log_utils import configure_isaac_sim_logging
 from scene import ATIDepthScene
-from ati_config import ATIBaseConfig
+from ati_config import ATIBaseConfig, ATIBaseRobotConfig
 from time import time
 import traceback
 import numpy as np
@@ -33,7 +33,7 @@ import os
 
 TIME_REPUTATION = 1000
 ONE_LAP_PERIOD = 20
-DATA_SAVE_PATH = "/home/ati/ATI_research/dataset/test_isaacsim_sdg/data/rendering_pt_mb_iso_tradeoff_subsample16_camerafps"
+DATA_SAVE_PATH = "/home/ati/ATI_research/dataset/test_isaacsim_sdg/data/rendering_configtest" # mb_iso_tradeoff_subsample16_camerafps
 
 def save_status(lap_idx, iso_idx, st_idx, speed_idx, light_idx, d_time=None):
     with open(os.path.join(DATA_SAVE_PATH, "status_log.txt"), "a") as f:
@@ -42,10 +42,13 @@ def save_status(lap_idx, iso_idx, st_idx, speed_idx, light_idx, d_time=None):
 if __name__ == "__main__":
     
     configure_isaac_sim_logging() # Set Isaac Sim logging level to Error to avoid cluttering
+    kaya_config = ATIBaseRobotConfig(robot_name="kaya")
+    kaya_config.set_kaya_config()
     render_config = ATIBaseConfig(
         name="ati_rendering_test",
-        agent_perspective_cam_prim_path="RSD455/Camera_OmniVision_OV9782_Color"
+        robot_config=kaya_config,
     )
+    render_config.set_rendering_mode("pathtracing")
     my_scene = ATIDepthScene(
         simulation_app,
         config=render_config,
@@ -70,7 +73,7 @@ if __name__ == "__main__":
     iso_idx = 0
     st_idx = 0
     speed_idx = 2
-    light_idx = 0
+    light_idx = 2
     
     w_coeff = (np.pi / 6)
     omega = w_coeff * agent_context[speed_idx]

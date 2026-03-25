@@ -1,1 +1,2 @@
 from .ati_base_config import ATIBaseConfig
+from .ati_robot_config import ATIBaseRobotConfig
