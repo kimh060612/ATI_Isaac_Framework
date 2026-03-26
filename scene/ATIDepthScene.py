@@ -47,9 +47,7 @@ class ATIDepthScene(BaseScene):
         # Calling it again here would invalidate the PhysX SimView handles that
         # were just created, causing "Simulation view object is invalidated" errors.
         self.agent_controller.reset()
-        
         self.R = 3.0
-        self.__warmup_rendering = 5
 
     def reset(self):
         super().reset()
