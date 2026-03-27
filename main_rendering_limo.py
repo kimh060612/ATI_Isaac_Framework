@@ -147,7 +147,7 @@ if __name__ == "__main__":
 
             if (step + 1) % NUM_ONE_LAP_STEPS == 0:
                 e_time = time()
-                save_status(lap_idx, iso_idx, st_idx, line_speed_idx, light_idx, NUM_ONE_LAP_STEPS, d_time=e_time - s_time)
+                save_status(lap_idx, iso_idx, st_idx, line_speed_idx, light_idx, d_time=e_time - s_time)
                 print(f"Lap {lap_idx} completed. Total steps: {step + 1}, Time for this lap: {e_time - s_time:.2f} seconds")
                 s_time = e_time
                 
