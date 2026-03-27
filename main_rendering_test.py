@@ -33,7 +33,7 @@ import os
 
 TIME_REPUTATION = 1000
 ONE_LAP_PERIOD = 20
-DATA_SAVE_PATH = "/home/ati/ATI_research/dataset/test_isaacsim_sdg/data/rendering_configtest" # mb_iso_tradeoff_subsample16_camerafps
+DATA_SAVE_PATH = "/home/ati/ATI_research/dataset/test_isaacsim_sdg/data/kaya_motion_blur_test" # mb_iso_tradeoff_subsample16_camerafps
 
 def save_status(lap_idx, iso_idx, st_idx, speed_idx, light_idx, d_time=None):
     with open(os.path.join(DATA_SAVE_PATH, "status_log.txt"), "a") as f:
@@ -49,6 +49,7 @@ if __name__ == "__main__":
         robot_config=kaya_config,
     )
     render_config.set_rendering_mode("pathtracing")
+    render_config.set_pathtracing_param(spp=128, num_subsamples=16)
     my_scene = ATIDepthScene(
         simulation_app,
         config=render_config,
@@ -67,15 +68,15 @@ if __name__ == "__main__":
     agent_context = [0.2, 0.5, 1.0, 1.5, 2.0]
     agent_context_light = [1000, 2000, 3000, 4000, 5000]
     
-    shutter_time_list = [0.001, 0.005, 0.01, 0.04, 0.08] # in seconds
-    iso_list = [200, 400, 600, 800, 1600]
+    shutter_time_list = [0.001, 0.003, 0.005, 0.01, 0.015] # in seconds
+    iso_list = [400, 600, 800, 1000, 1600]
     
     iso_idx = 0
     st_idx = 0
     speed_idx = 2
     light_idx = 2
     
-    w_coeff = (np.pi / 6)
+    w_coeff = (np.pi / 12)
     omega = w_coeff * agent_context[speed_idx]
     
     # save_status(lap_idx, iso_idx, st_idx, speed_idx, light_idx)

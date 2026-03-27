@@ -112,6 +112,7 @@ class BaseScene(metaclass=ABCMeta):
         carb.settings.get_settings().set_int("/rtx/post/tonemap/op", 1)                    # Linear: applies exposure, no tone curve
         carb.settings.get_settings().set_bool("/rtx/post/tonemap/enableSrgbToGamma", False)
         
+        carb.settings.get_settings().set("/app/player/useFixedTimeStepping", True)
         carb.settings.get_settings().set("rtx/post/dlss/execMode", 2)
         carb.settings.get_settings().set("/omni/replicator/captureOnPlay", self.__capture_on_play) # True
         carb.settings.get_settings().set("/omni/replicator/captureMotionBlur", self.capture_motion_blur)
