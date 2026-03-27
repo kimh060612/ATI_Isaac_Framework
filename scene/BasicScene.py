@@ -39,7 +39,7 @@ from ati_config import ATIBaseConfig
 class BaseScene(metaclass=ABCMeta):
     
     RENDERING_ANNOTATOR_TYPES = {
-        "depth": "distance_to_image_plane",
+        "depth": "distance_to_camera", # "distance_to_image_plane",
         "instance_segmentation": "semantic_segmentation",
         "2d_bounding_box": "bounding_box_2d_tight",
         "3d_bounding_box": "bounding_box_3d",
