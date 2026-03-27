@@ -77,7 +77,7 @@ class BaseScene(metaclass=ABCMeta):
         self._num_frame_steps = 0
         self._num_steps = 0
         self.__reset_needed = False
-        self.__warmup_steps = 60
+        self.__warmup_steps = 60 if self.rendering_mode == "realtime" else 60 * self.config.num_subsamples
         
         self.__capture_on_play = True
         
