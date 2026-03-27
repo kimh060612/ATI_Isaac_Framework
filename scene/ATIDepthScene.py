@@ -15,7 +15,7 @@ import os
 from isaacsim.core.utils.types import ArticulationAction
 from robot_control.define_controller import define_agent_controller
 
-DEBUG = True
+DEBUG = False
 
 class ATIDepthScene(BaseScene):
     def __init__(
@@ -57,10 +57,19 @@ class ATIDepthScene(BaseScene):
         return self.RENDERING_ANNOTATOR_TYPES[anno_name]
 
     def __mb_exposure_time_to_frame(self, exposure_time):
-        target_dt = self.physics_dt if self.rendering_mode == "pathtracing" else self.rendering_dt
-        _delta_shutter = int(1. / target_dt) * exposure_time
-        shutter_open_time = - _delta_shutter / 2.
-        shutter_close_time = _delta_shutter / 2.
+        if exposure_time < 0:
+            raise ValueError(f"shutter_time must be non-negative, got {exposure_time}.")
+
+        # USD camera shutter values are frame-relative, while exposure:time is in seconds.
+        # Convert using the camera frame interval, not the path-tracing physics substep.
+        shutter_window_in_frames = float(exposure_time) * float(self.agent_camera_fps)
+        if DEBUG and shutter_window_in_frames > 1.0:
+            print(
+                f"[Warning] shutter_time={exposure_time:.6f}s spans "
+                f"{shutter_window_in_frames:.3f} camera frames at {self.agent_camera_fps} FPS."
+            )
+        shutter_open_time = 0.0
+        shutter_close_time = shutter_window_in_frames
         return shutter_open_time, shutter_close_time
 
     def sensor_control(

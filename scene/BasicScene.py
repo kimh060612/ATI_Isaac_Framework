@@ -68,6 +68,7 @@ class BaseScene(metaclass=ABCMeta):
         self.capture_motion_blur = config.capture_motion_blur
         self.physics_dt = physics_dt
         self.rendering_dt = rendering_dt
+        self.motion_blur_physics_dt = physics_dt
         self.cameras: Dict[str, Camera] = {}
         self.robot_agent = None
         self.agent = None
@@ -154,9 +155,10 @@ class BaseScene(metaclass=ABCMeta):
             # Check the target physics depending on the custom delta time and the render mode
         
         target_physics_fps = 1 / self.physics_dt
+        self.motion_blur_physics_dt = self.physics_dt
         if self.config.rendering_mode == "pathtracing":
             target_physics_fps *= self.config.num_subsamples
-            self.physics_dt /= self.config.num_subsamples
+            self.motion_blur_physics_dt = self.physics_dt / self.config.num_subsamples
             # Check if the physics FPS needs to be increased to match the custom delta time
         orig_physics_fps = physx_scene.GetTimeStepsPerSecondAttr().Get()
         if target_physics_fps > orig_physics_fps:
