@@ -214,11 +214,9 @@ class BaseScene(metaclass=ABCMeta):
     
     """
     Most important function. -> Reducing Sim2Real gap by step time and rendering time control. 
-    We should render image by shutter time parameter. 
-    For example, if the shutter time is 0.001 second, we should render image every 0.001 second (in the simulation time). 
-    But we can step physics with larger time step to have more accurate simulation.  
-    For example, we can step physics with 0.01 second and render image every 0.001 second.  
-        -> That means we should render image 10 times in one physics step. 
+    In this function, you should control the time of simulation world. 
+    Currently, we control the time in criteria of camera FPS. For every 1 / camera_fps seconds, we will capture the synthetic data from the camera sensor.
+    And, That is the one 'step' of the simulation.  
     """
     def step(self, render=True):
         """
@@ -232,7 +230,12 @@ class BaseScene(metaclass=ABCMeta):
             - Empty Dictionary: (No rendered output. The sensor did not capture during the timestep, or the rendering is disabled.)
         """
         if self.rendering_mode == "pathtracing":
-            rendered_data = self.render_time_control(render=render)
+            i = 0
+            while i < 2 * self.config.num_subsamples:
+                rendered_data = self.__render_time_control(render=render)
+                if self.__check_valid_synthetic_data(rendered_data):
+                    break
+                i += 1
         elif self.rendering_mode == "realtime":
             self.world.step(render=render)
             rendered_data = {
@@ -248,14 +251,10 @@ class BaseScene(metaclass=ABCMeta):
                 self.__reset_needed = False
         
         # # Rendering Agent Camera Only for now. Need to be generalized for multiple cameras.
-        # rendered_data = {
-        #     "rgb": self.agent_camera.get_rgb(),
-        #     **self.agent_camera.get_current_frame()
-        # }
-        if rendered_data and \
-            rendered_data.get("rgb", None) is not None and \
-            rendered_data["rgb"].size != 0:
+        if self.__check_valid_synthetic_data(rendered_data):
             self._num_frame_steps += 1
+        else:
+            raise ValueError("No RGB data captured. Check the camera settings and rendering mode.")
         return rendered_data 
     
     @abstractmethod
@@ -286,7 +285,14 @@ class BaseScene(metaclass=ABCMeta):
         sun.GetIntensityAttr().Set(intensity)
     
     
-    def render_time_control(self, render=True):
+    def __check_valid_synthetic_data(self, data: dict):
+        if not data:
+            return False
+        if data.get("rgb", None) is None or data["rgb"].size == 0:
+            return False
+        return True
+    
+    def __render_time_control(self, render=True):
         """
         Enforcing rendering frequency based on camera FPS.
         In path tracing mode with motion blur, rep.orchestrator.step() internally

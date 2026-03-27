@@ -30,14 +30,17 @@ from ati_config import ATIBaseConfig, ATIBaseRobotConfig
 from time import time
 import traceback
 import numpy as np
-import random
 import os
 
-DATA_SAVE_PATH = "/issac-sim/dataset/experiment_isaac_rendering/limo_rendering_pt" # mb_iso_tradeoff_subsample16_camerafps
+os.environ["PYOPENGL_PLATFORM"] = "egl" # For headless rendering with PyOpenGL.
+os.environ["EGL_DEVICE_ID"] = "0" # Set to the appropriate GPU index if multiple GPUs are present.
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
-def save_status(lap_idx, iso_idx, st_idx, speed_idx, light_idx, ONE_LAP_PERIOD, d_time=None):
+DATA_SAVE_PATH = "/issac-sim/dataset/experiment_isaac_rendering/limo_pt_sub16" # mb_iso_tradeoff_subsample16_camerafps
+
+def save_status(lap_idx, iso_idx, st_idx, speed_idx, light_idx, d_time=None):
     with open(os.path.join(DATA_SAVE_PATH, "status_log.txt"), "a") as f:
-        f.write(f"step: {lap_idx*ONE_LAP_PERIOD + 1} ~ {(lap_idx + 1) * ONE_LAP_PERIOD} | lap_idx: {lap_idx} | iso_idx: {iso_idx} | shutter_time_idx: {st_idx} | speed_idx: {speed_idx} | light_intensity_idx: {light_idx} | duration: {d_time:.2f} seconds\n")
+        f.write(f"lap_idx: {lap_idx} | iso_idx: {iso_idx} | shutter_time_idx: {st_idx} | speed_idx: {speed_idx} | light_intensity_idx: {light_idx} | duration: {d_time:.2f} seconds\n")
 
 def calculate_next_step(
     v_line, 
@@ -84,7 +87,7 @@ if __name__ == "__main__":
     agent_linear_context = [2.0, 4.0]   # [m/s] LIMO max ≈ 1.5 m/s; 2.0 exceeds stable physics range for R=0.3m
     agent_context_light = [1000, 2000, 3000, 4000, 5000]
     
-    shutter_time_list = [0.001, 0.005, 0.01, 0.04, 0.08] # in seconds
+    shutter_time_list = [0.001, 0.002, 0.005, 0.01, 0.015] # in seconds
     iso_list = [200, 400, 600, 800, 1600]
     
     # The total number of laps is determined by controllable parameters: 
