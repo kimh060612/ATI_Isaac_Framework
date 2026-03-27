@@ -14,10 +14,11 @@ class ATIBaseConfig:
     stage_units_in_meters: float = 1.0
     rendering_mode: str = "pathtracing"  # "realtime" or "pathtracing"
     capture_motion_blur: bool = True
-    pt_spp: int = 128  
+    pt_spp: int = 32  
     num_subsamples: int = 16  # Samples per pixel for path tracing
     
-    scene_usd: str = "/Isaac/Environments/Grid/default_environment.usd"
+    scene_usd: str = "/Isaac/Environments/Simple_Warehouse/warehouse.usd"
+    # "/Isaac/Environments/Grid/gridroom_curved.usd"
     # "/Isaac/Environments/Simple_Warehouse/warehouse.usd"
     # "/Isaac/Environments/Grid/default_environment.usd"
     # "/Isaac/Environments/Simple_Warehouse/full_warehouse.usd" -> Warehouse full

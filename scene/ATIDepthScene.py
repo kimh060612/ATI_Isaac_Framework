@@ -107,9 +107,10 @@ class ATIDepthScene(BaseScene):
             # exposure:time is for "brightness"
             # shutter:open/close is for motion blur effect, and the time difference between open and close determines the amount of motion blur
             open_time, close_time = self.__mb_exposure_time_to_frame(target_shutter_time)
+            # open_time, close_time
             self.cameras[sensor_name].set_shutter_properties(
-                delay_open=open_time,
-                delay_close=close_time
+                delay_open=0.0,
+                delay_close=target_shutter_time
             )
             cam_prim.GetAttribute("exposure:time").Set(target_shutter_time)
             
