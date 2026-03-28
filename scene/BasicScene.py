@@ -100,6 +100,7 @@ class BaseScene(metaclass=ABCMeta):
         self.__reset_needed = False
         self.__warmup_steps = 60
         self._camera_capture_start_time = 0.0
+        self._pt_external_frame_counter = 0
         
         self.__capture_on_play = True
         
@@ -178,7 +179,8 @@ class BaseScene(metaclass=ABCMeta):
             # simulation step advances time once, matching the successful
             # manual-shutter experiment in test_mb_exp_time.py.
             carb.settings.get_settings().set("/rtx/pathtracing/totalSpp", self.config.pt_spp)
-            carb.settings.get_settings().set("/rtx/pathtracing/optixDenoiser/enabled", 1)
+            carb.settings.get_settings().set("/rtx/pathtracing/clampSpp", self.config.pt_spp)
+            carb.settings.get_settings().set("/rtx/pathtracing/optixDenoiser/enabled", 0)
             carb.settings.get_settings().destroy_item("/omni/replicator/pathTracedMotionBlurSubSamples")
         else:
             print(f"[RenderingSettings] Setting RayTracedLighting render mode motion blur settings")
@@ -412,6 +414,19 @@ class BaseScene(metaclass=ABCMeta):
             return np.clip(averaged_rgb, info.min, info.max).astype(np.asarray(fallback_rgb).dtype)
         return averaged_rgb
 
+    def _extract_rgb_from_frame(self, frame: dict):
+        if not frame:
+            return None
+        frame_rgb = frame.get("rgb", None)
+        if frame_rgb is None:
+            return None
+        frame_rgb = np.asarray(frame_rgb)
+        if frame_rgb.size == 0:
+            return None
+        if frame_rgb.ndim >= 3 and frame_rgb.shape[-1] >= 3:
+            return frame_rgb[..., :3]
+        return frame_rgb
+
     def _get_motion_blur_samples(self, shutter_duration: float, available_samples: int) -> int:
         if not self.config.enable_mb_adaptive_sampling:
             # Hueristic threshold for motion blur sampling: 
@@ -482,18 +497,20 @@ class BaseScene(metaclass=ABCMeta):
     def _capture_camera_frame(self, sensor_name: str, frame_start_time: float, frame_end_time: float):
         camera = self.cameras[sensor_name]
         shutter_start_offset, shutter_end_offset = self._get_camera_shutter_window_seconds(sensor_name)
-        shutter_start_time = frame_start_time + shutter_start_offset
-        shutter_end_time = frame_start_time + shutter_end_offset
+        shutter_duration = max(0.0, shutter_end_offset - shutter_start_offset)
+        shutter_end_time = frame_end_time
+        shutter_start_time = max(frame_start_time, frame_end_time - shutter_duration)
         
         rgb_samples = []
         latest_rgb = None
         latest_frame = camera.get_current_frame(clone=True)
-        representative_frame = latest_frame
-        gt_reference_time = (
-            0.5 * (shutter_start_time + shutter_end_time)
-            if shutter_end_time > shutter_start_time + 1e-9
-            else frame_end_time
+        representative_frame = None
+        last_consumed_rendering_time = (
+            float(latest_frame.get("rendering_time"))
+            if latest_frame and latest_frame.get("rendering_time", None) is not None
+            else float("-inf")
         )
+        gt_reference_time = frame_end_time
         render_schedule = self._build_render_sample_schedule(
             frame_start_time=frame_start_time,
             frame_end_time=frame_end_time,
@@ -529,10 +546,24 @@ class BaseScene(metaclass=ABCMeta):
                     f"simulation_dt={self._simulation_dt:.6f}"
                 )
             latest_frame = camera.get_current_frame(clone=True)
-            current_rgb = camera.get_rgb()
+            render_time = (
+                float(latest_frame.get("rendering_time"))
+                if latest_frame and latest_frame.get("rendering_time", None) is not None
+                else float("-inf")
+            )
+            if render_time <= last_consumed_rendering_time + 1e-9:
+                if DEBUG:
+                    print(
+                        "[RenderControl] Skipping stale camera frame at "
+                        f"render_time={render_time:.6f}, last_consumed={last_consumed_rendering_time:.6f}"
+                    )
+                continue
+            last_consumed_rendering_time = render_time
+
+            current_rgb = self._extract_rgb_from_frame(latest_frame)
             if current_rgb is not None and current_rgb.size != 0:
                 latest_rgb = np.asarray(current_rgb)
-            sample_time = current_time
+            sample_time = render_time if np.isfinite(render_time) else current_time
             frame_distance = abs(sample_time - gt_reference_time)
             if frame_distance <= representative_frame_distance + 1e-9:
                 representative_frame = latest_frame
@@ -547,7 +578,7 @@ class BaseScene(metaclass=ABCMeta):
         self._advance_simulation_without_render(target_time=frame_end_time)
 
         final_rgb = self._average_rgb_samples(rgb_samples, latest_rgb)
-        rendered_data = dict(representative_frame) if representative_frame else {}
+        rendered_data = dict(representative_frame) if representative_frame else dict(latest_frame)
         rendered_data["rgb"] = final_rgb
         return rendered_data
     
