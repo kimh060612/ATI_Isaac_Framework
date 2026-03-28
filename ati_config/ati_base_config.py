@@ -1,21 +1,25 @@
 from typing import List, Tuple
-from dataclasses import dataclass, field
 from .ati_robot_config import ATIBaseRobotConfig
 import numpy as np
 
 class ATIBaseConfig:
     """Configuration for rendering test."""
     exp_name: str
-    # physical FPS must be larger than rendering step to ensure motion blur effect.
-    physics_dt: float = 1. / 60 
-    # For accuracy, the physical FPS should be "num sub samepls" X "rendering FPS". 
-    # However, we set just 2 times for shortcut. 
-    rendering_dt: float = 1. / 60
+    # Base physics dt requested by the experiment. The scene may refine this into
+    # a smaller internal step so camera_fps-aligned shutter integration has
+    # enough temporal samples.
+    physics_dt: float = 1. / 30 
+    # Maximum rendering dt requested by the experiment. The scene will clamp this
+    # against camera_fps and motion-blur sampling needs.
+    rendering_dt: float = 1. / 30 
     stage_units_in_meters: float = 1.0
     rendering_mode: str = "pathtracing"  # "realtime" or "pathtracing"
     capture_motion_blur: bool = True
-    pt_spp: int = 32  
-    num_subsamples: int = 16  # Samples per pixel for path tracing
+    pt_spp: int = 128  
+    enable_mb_adaptive_sampling: bool = True  # Whether to enable adaptive sampling for pathtracing
+    num_subsamples: int = 32  # Maximum motion-blur samples rendered inside one shutter interval
+    min_motion_blur_subsamples: int = 2  # Minimum samples used for any non-zero shutter interval
+    
     
     scene_usd: str = "/Isaac/Environments/Simple_Warehouse/warehouse.usd"
     # "/Isaac/Environments/Grid/gridroom_curved.usd"
@@ -31,6 +35,7 @@ class ATIBaseConfig:
     require_external_camera: bool = True
     spawn_random_objs: bool = True
     robot_config: ATIBaseRobotConfig
+    camera_controller: str = "exposure_iso_controller"
     
     single_object_usd_paths: List[Tuple[str, int]] = [] # field(default_factory=list)
     props_object_usd_paths: List[Tuple[str, int]] = [] # field(default_factory=list)
@@ -41,7 +46,8 @@ class ATIBaseConfig:
         robot_config: ATIBaseRobotConfig,
     ):
         self.exp_name = name
-        # No effect for Camera objects. We control camera FPS with rendering frequency (rendering_dt) in the scene.
+        # BaseScene emits one synthetic frame every 1 / agent_camera_fps seconds,
+        # independent of the finer internal simulation step it may use.
         self.rendering_targets = [
             "depth",
             "2d_bounding_box",
@@ -71,6 +77,10 @@ class ATIBaseConfig:
         self.agent_camera_prim_path = robot_config.agent_camera_prim_path
         self.agent_perspective_cam_prim_path = robot_config.agent_perspective_cam_prim_path
         self.require_external_camera = robot_config.require_external_camera
+        
+        # enforce physics_dt and rendering_dt to be no larger than 1 / agent_camera_fps for correct motion blur sampling and camera-aligned stepping.
+        self.physics_dt = self.rendering_dt = 1. / self.agent_camera_fps
+        
     
     def set_agent_camera_usd_path(self, camera_usd_path):
         self.agent_camera_usd_path = camera_usd_path
@@ -89,9 +99,11 @@ class ATIBaseConfig:
             raise ValueError(f"Unsupported rendering mode: {mode}. Supported modes are 'realtime' and 'pathtracing'.")
         self.rendering_mode = mode
     
-    def set_pathtracing_param(self, spp, num_subsamples):
+    def set_pathtracing_param(self, spp, num_subsamples, min_motion_blur_subsamples=None):
         self.pt_spp = spp
         self.num_subsamples = num_subsamples
+        if min_motion_blur_subsamples is not None:
+            self.min_motion_blur_subsamples = min_motion_blur_subsamples
     
     def set_random_obj_spawn(self, spawn_random_objs: bool):
         self.spawn_random_objs = spawn_random_objs

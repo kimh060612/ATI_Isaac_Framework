@@ -16,7 +16,7 @@ class ATIBaseRobotConfig:
     # For simulation, the camera prim path and asset prim path may be different. So we need to set them separately.
     agent_perspective_cam_prim_path = ""
     agent_camera_resolution = (640, 480)
-    agent_camera_fps = 60
+    agent_camera_fps = 30
     require_external_camera: bool = True
 
     custom_robot: bool = False

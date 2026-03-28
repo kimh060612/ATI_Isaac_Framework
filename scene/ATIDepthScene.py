@@ -12,10 +12,8 @@ import numpy as np
 from itertools import cycle
 import os
 
-from isaacsim.core.utils.types import ArticulationAction
 from robot_control.define_controller import define_agent_controller
-
-DEBUG = False
+from ati_config import DEBUG
 
 class ATIDepthScene(BaseScene):
     def __init__(
@@ -37,7 +35,7 @@ class ATIDepthScene(BaseScene):
         )
 
         ## Robot Control Code
-        if DEBUG: print("[DEBUG] Checking Holonomic Robot Prim Path:", self.agent.prim_path)
+        if DEBUG: print("[DEBUG] Checking Robot Prim Path:", self.agent.prim_path)
         self.agent_controller = define_agent_controller(
             agent_name=self.robot_config.robot_name,
             agent_prim_path=self.agent.prim_path,
@@ -56,22 +54,6 @@ class ATIDepthScene(BaseScene):
     def get_anno(self, anno_name):
         return self.RENDERING_ANNOTATOR_TYPES[anno_name]
 
-    def __mb_exposure_time_to_frame(self, exposure_time):
-        if exposure_time < 0:
-            raise ValueError(f"shutter_time must be non-negative, got {exposure_time}.")
-
-        # USD camera shutter values are frame-relative, while exposure:time is in seconds.
-        # Convert using the camera frame interval, not the path-tracing physics substep.
-        shutter_window_in_frames = float(exposure_time) * float(self.agent_camera_fps)
-        if DEBUG and shutter_window_in_frames > 1.0:
-            print(
-                f"[Warning] shutter_time={exposure_time:.6f}s spans "
-                f"{shutter_window_in_frames:.3f} camera frames at {self.agent_camera_fps} FPS."
-            )
-        shutter_open_time = 0.0
-        shutter_close_time = shutter_window_in_frames
-        return shutter_open_time, shutter_close_time
-
     def sensor_control(
         self, 
         sensor_name="agent_camera", 
@@ -82,44 +64,10 @@ class ATIDepthScene(BaseScene):
         For now, I'll implement the control logic for...
         ISO, Shutter Time, Aperture
         """
-        if self.config.require_external_camera:
-            cam_real_prim_path = f"{self.agent_camera_prim_path}/{self.agent_perspective_cam_prim_path}"
-        else:
-            cam_real_prim_path = self.agent_camera_prim_path
-        cam_prim = self.world.stage.GetPrimAtPath(cam_real_prim_path)
-        cam_prim.ApplyAPI("OmniRtxCameraExposureAPI_1")
-        if not cam_prim.IsValid():
-            print("[Error] There is something going wrong....")
-            raise ValueError(f"Camera prim path {cam_real_prim_path} is not valid.")
-        
-        target_iso = control_parameters.get("iso", None)
-        if target_iso is None:
-            if DEBUG: print("[Warning] No ISO value provided in control_parameters. Skipping ISO control.")
-        else:
-            if DEBUG: print(f"[DEBUG] Setting ISO of {sensor_name} to {target_iso}")
-            cam_prim.GetAttribute("exposure:iso").Set(target_iso)
-        
-        target_shutter_time = control_parameters.get("shutter_time", None)
-        if target_shutter_time is None:
-            if DEBUG: print("[Warning] No shutter_time value provided in control_parameters. Skipping shutter time control.")
-        else:
-            # shutter time control must be done simultaneously in both exposure:time, shutter:open/close attributes
-            # exposure:time is for "brightness"
-            # shutter:open/close is for motion blur effect, and the time difference between open and close determines the amount of motion blur
-            open_time, close_time = self.__mb_exposure_time_to_frame(target_shutter_time)
-            # open_time, close_time
-            self.cameras[sensor_name].set_shutter_properties(
-                delay_open=0.0,
-                delay_close=target_shutter_time
-            )
-            cam_prim.GetAttribute("exposure:time").Set(target_shutter_time)
-            
-        target_aperture = control_parameters.get("aperture", None)
-        if target_aperture is None:
-            if DEBUG: print("[Warning] No aperture value provided in control_parameters. Skipping aperture control.")
-        else:
-            cam_prim.GetAttribute("exposure:fStop").Set(target_aperture)
-            self.cameras[sensor_name].set_lens_aperture(target_aperture)    
+        if sensor_name not in self.sensor_controllers:
+            raise ValueError(f"Sensor '{sensor_name}' does not have a controller.")
+        controller = self.sensor_controllers[sensor_name]
+        controller.update_parameters(control_parameters)
         return 
     
     def robot_control(

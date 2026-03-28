@@ -26,7 +26,7 @@ enable_extension("omni.services.livestream.nvcf")
 
 # Scene Building
 from scene import ATIDepthScene
-from ati_config import ATIBaseConfig, ATIBaseRobotConfig
+from ati_config import ATIBaseConfig, ATIBaseRobotConfig, DEBUG
 from time import time
 import traceback
 import numpy as np
@@ -36,7 +36,7 @@ os.environ["PYOPENGL_PLATFORM"] = "egl" # For headless rendering with PyOpenGL.
 os.environ["EGL_DEVICE_ID"] = "0" # Set to the appropriate GPU index if multiple GPUs are present.
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
-DATA_SAVE_PATH = "/issac-sim/dataset/experiment_isaac_rendering/limo_pt_sub16" # mb_iso_tradeoff_subsample16_camerafps
+DATA_SAVE_PATH = "/issac-sim/dataset/experiment_isaac_rendering/ati_limo_rendering_test" # mb_iso_tradeoff_subsample16_camerafps
 
 def save_status(lap_idx, iso_idx, st_idx, speed_idx, light_idx, d_time=None):
     with open(os.path.join(DATA_SAVE_PATH, "status_log.txt"), "a") as f:
@@ -65,7 +65,7 @@ if __name__ == "__main__":
         robot_config=limo_config,
     )
     scene_config.set_rendering_mode("pathtracing") # "pathtracing" or "realtime"
-    scene_config.set_pathtracing_param(spp=128, num_subsamples=16) # Only effective when rendering_mode is "pathtracing"
+    scene_config.set_pathtracing_param(spp=128, num_subsamples=32) # Only effective when rendering_mode is "pathtracing"
     scene_config.set_random_obj_spawn(True)
     limo_scene = ATIDepthScene(
         simulation_app,
@@ -87,7 +87,7 @@ if __name__ == "__main__":
     agent_linear_context = [2.0, 4.0]   # [m/s] LIMO max ≈ 1.5 m/s; 2.0 exceeds stable physics range for R=0.3m
     agent_context_light = [1000, 2000, 3000, 4000, 5000]
     
-    shutter_time_list = [0.001, 0.002, 0.005, 0.01, 0.015] # in seconds
+    shutter_time_list = [0.002, 0.004, 0.008, 0.016, 0.032] # in seconds
     iso_list = [200, 400, 600, 800, 1600]
     
     # The total number of laps is determined by controllable parameters: 
@@ -114,7 +114,6 @@ if __name__ == "__main__":
     )
     s_time = time()
     e_time = -1
-    VERBOSE = False
     try:
         while simulation_app._app.is_running() and not simulation_app.is_exiting():
             limo_scene.robot_control(
@@ -125,22 +124,22 @@ if __name__ == "__main__":
                 }
             )
             syn_data = limo_scene.step(render=True)
-            print(f"Step: {step}, Simulation Time: {limo_scene.get_simulation_current_time:.4f} seconds")
+            if DEBUG: print(f"Step: {step}, Simulation Time: {limo_scene.get_simulation_current_time:.4f} seconds")
             rgb_data: np.array = syn_data.get("rgb", None)
             depth_data: np.array = syn_data.get(limo_scene.get_anno("depth"), None)
             bbox_data: np.array = syn_data.get(limo_scene.get_anno("2d_bounding_box"), None)
             if rgb_data is None or rgb_data.size == 0:
-                if VERBOSE:
+                if DEBUG:
                     print("There is no RGB rendering Data. Skipping...")
             else:
                 np.save(os.path.join(DATA_SAVE_PATH, "rgb", f"rgb_lap{lap_idx:02d}_{step:03d}.npy"), rgb_data)
             if depth_data is None or depth_data.size == 0:
-                if VERBOSE:
+                if DEBUG:
                     print("There is no Depth rendering Data. Skipping...")
             else:
                 np.save(os.path.join(DATA_SAVE_PATH, "depth", f"depth_lap{lap_idx:02d}_{step:03d}.npy"), depth_data)
             if bbox_data is None or bbox_data["data"].size == 0:
-                if VERBOSE:
+                if DEBUG:
                     print("There is no BBox rendering Data. Skipping...")
             else:
                 np.save(os.path.join(DATA_SAVE_PATH, "bbox", f"bbox_lap{lap_idx:02d}_{step:03d}.npy"), bbox_data)
@@ -165,13 +164,6 @@ if __name__ == "__main__":
                     control_parameters={
                         "iso": iso_list[iso_idx],
                         "shutter_time": shutter_time_list[st_idx]
-                    }
-                )
-                limo_scene.robot_control(
-                    time=limo_scene.get_simulation_current_time,
-                    control_parameters={
-                        "linear_velocity": 0.0, 
-                        "angular_velocity": 0.0
                     }
                 )
                 limo_scene.control_light_intensity(agent_context_light[light_idx])

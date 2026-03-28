@@ -14,7 +14,6 @@ import omni.replicator.core as rep
 ## RGB-D Sensor
 import omni.isaac.core.utils.numpy.rotations as rot_utils
 import omni.isaac.core.utils.prims as prim_utils
-import omni.replicator.core as rep
 import omni.timeline
 import cv2
 import carb
@@ -33,10 +32,15 @@ from isaacsim.core.prims import SingleArticulation
 from isaacsim.robot.wheeled_robots.robots.holonomic_robot_usd_setup import HolonomicRobotUsdSetup
 from isaacsim.sensors.camera import Camera
 
-from ati_config import ATIBaseConfig
-
+from ati_config import ATIBaseConfig, DEBUG
+from sensor_control import BaseSensorController, ShutterExposureSensorController
+from tqdm import tqdm
 
 class BaseScene(metaclass=ABCMeta):
+    SENSOR_CONTROLLER_CLS = {
+        "exposure_iso_controller": ShutterExposureSensorController,
+        "name_of_controller": None, # Replace with actual example controller class
+    }
     
     RENDERING_ANNOTATOR_TYPES = {
         "depth": "distance_to_camera", # "distance_to_image_plane",
@@ -55,21 +59,37 @@ class BaseScene(metaclass=ABCMeta):
         stage_units_in_meters=1.0,
         seed: int = 20260318
     ):
-        self.world = World(
-            physics_dt=physics_dt,
-            rendering_dt=rendering_dt,
-            stage_units_in_meters=stage_units_in_meters
-        )
-        
         self.sim_app = simulation_app
         self.config = config
         self.robot_config = config.robot_config
         self.rendering_mode = config.rendering_mode
         self.capture_motion_blur = config.capture_motion_blur
-        self.physics_dt = physics_dt
-        self.rendering_dt = rendering_dt
-        self.motion_blur_physics_dt = physics_dt
+        self.agent_camera_fps = config.agent_camera_fps
+        self.sensor_control_algorithm = config.camera_controller
+        
+        if self.agent_camera_fps <= 0:
+            raise ValueError(f"agent_camera_fps must be positive, got {self.agent_camera_fps}.")
+        self._camera_frame_dt = 1.0 / float(self.agent_camera_fps)
+        self._base_simulation_dt, self._sim_steps_per_camera_frame = self._compute_internal_simulation_dt(
+            physics_dt=physics_dt,
+            rendering_dt=rendering_dt,
+        )
+        self._simulation_dt = self._base_simulation_dt
+        self._internal_render_fps = 1.0 / self._simulation_dt
+        self.world = World(
+            physics_dt=self._simulation_dt,
+            rendering_dt=self._simulation_dt,
+            stage_units_in_meters=stage_units_in_meters
+        )
+
+        self.requested_physics_dt = physics_dt
+        self.requested_rendering_dt = rendering_dt
+        self.physics_dt = self._simulation_dt
+        self.rendering_dt = self._simulation_dt
+        self.motion_blur_physics_dt = self._simulation_dt
+        
         self.cameras: Dict[str, Camera] = {}
+        self.sensor_controllers: Dict[str, BaseSensorController] = {}
         self.robot_agent = None
         self.agent = None
         self.n_rendered_frames = 0
@@ -78,7 +98,8 @@ class BaseScene(metaclass=ABCMeta):
         self._num_frame_steps = 0
         self._num_steps = 0
         self.__reset_needed = False
-        self.__warmup_steps = 60 if self.rendering_mode == "realtime" else 240
+        self.__warmup_steps = 60
+        self._camera_capture_start_time = 0.0
         
         self.__capture_on_play = True
         
@@ -90,7 +111,6 @@ class BaseScene(metaclass=ABCMeta):
         self.agent_camera_usd_path = config.agent_camera_usd_path
         self.agent_camera_prim_path = config.agent_camera_prim_path
         self.agent_perspective_cam_prim_path = config.agent_perspective_cam_prim_path
-        self.agent_camera_fps = config.agent_camera_fps
         self.agent_camera_resolution = config.agent_camera_resolution
         self.rendering_targets = config.rendering_targets
         self.spawn_random_objs = config.spawn_random_objs
@@ -105,6 +125,31 @@ class BaseScene(metaclass=ABCMeta):
         # Scene will be built simultaneously when the class is initialized, so no need to call build_scene() separately in main_rendering_test.py
         self.build_scene()
         
+    def _compute_internal_simulation_dt(self, physics_dt: float, rendering_dt: float):
+        candidate_dt = min(float(physics_dt), float(rendering_dt), self._camera_frame_dt)
+        if self.capture_motion_blur:
+            max_motion_blur_samples = max(int(self.config.num_subsamples), 1)
+            candidate_dt = min(candidate_dt, self._camera_frame_dt / float(max_motion_blur_samples))
+        if candidate_dt <= 0.0:
+            raise ValueError(
+                f"Computed internal simulation dt must be positive, got {candidate_dt}."
+            )
+        steps_per_camera_frame = max(1, int(np.ceil(self._camera_frame_dt / candidate_dt - 1e-9)))
+        simulation_dt = self._camera_frame_dt / float(steps_per_camera_frame)
+        print(
+            "[Timing] "
+            f"camera_fps={self.agent_camera_fps}, "
+            f"camera_dt={self._camera_frame_dt:.6f}, "
+            f"internal_sim_dt={simulation_dt:.6f}, "
+            f"steps_per_camera_frame={steps_per_camera_frame}"
+        )
+        return simulation_dt, steps_per_camera_frame
+
+    def _get_physx_scene_api(self):
+        for prim in self.world.stage.Traverse():
+            if prim.IsA(UsdPhysics.Scene):
+                return PhysxSchema.PhysxSceneAPI.Apply(prim)
+        return None
     
     def __rendering_settings(self):
         # ── Disable auto-exposure so camera exposure attributes take effect ──
@@ -113,9 +158,13 @@ class BaseScene(metaclass=ABCMeta):
         carb.settings.get_settings().set_bool("/rtx/post/tonemap/enableSrgbToGamma", False)
         
         carb.settings.get_settings().set("/app/player/useFixedTimeStepping", True)
+        carb.settings.get_settings().set("/app/runLoops/main/rateLimitEnabled", True)
+        carb.settings.get_settings().set("/app/runLoops/main/rateLimitFrequency", self._internal_render_fps)
+        carb.settings.get_settings().set("/app/stage/timeCodesPerSecond", float(self._internal_render_fps))
         carb.settings.get_settings().set("rtx/post/dlss/execMode", 2)
-        carb.settings.get_settings().set("/omni/replicator/captureOnPlay", self.__capture_on_play) # True
-        carb.settings.get_settings().set("/omni/replicator/captureMotionBlur", self.capture_motion_blur)
+        carb.settings.get_settings().set("/omni/replicator/captureOnPlay", self.__capture_on_play) # True 
+        carb.settings.get_settings().set("/omni/replicator/captureMotionBlur", False)
+        carb.settings.get_settings().set_bool("/rtx/post/motionblur/enabled", False)
         
         # Make sure fixed time stepping is set (the timeline will be advanced with the same delta time)
         carb.settings.get_settings().set("/app/player/useFixedTimeStepping", True)
@@ -125,13 +174,12 @@ class BaseScene(metaclass=ABCMeta):
             carb.settings.get_settings().set("/rtx/rendermode", "PathTracing")
             # (int): Total number of samples for each rendered pixel, per frame.
             carb.settings.get_settings().set("/rtx/pathtracing/spp", self.config.pt_spp)
-            # (int): Maximum number of samples to accumulate per pixel. 
-            # When this count is reached the rendering stops until a scene or setting change is detected, restarting the rendering process. 
-            # Set to 0 to remove this limit.
-            carb.settings.get_settings().set("/rtx/pathtracing/totalSpp", self.config.pt_spp * 4)
-            carb.settings.get_settings().set("/rtx/pathtracing/optixDenoiser/enabled", 0)
-            # Number of sub samples to render if in PathTracing render mode and motion blur is enabled.
-            carb.settings.get_settings().set("/omni/replicator/pathTracedMotionBlurSubSamples", self.config.num_subsamples)
+            # Keep accumulation capped to a single frame's spp so each internal
+            # simulation step advances time once, matching the successful
+            # manual-shutter experiment in test_mb_exp_time.py.
+            carb.settings.get_settings().set("/rtx/pathtracing/totalSpp", self.config.pt_spp)
+            carb.settings.get_settings().set("/rtx/pathtracing/optixDenoiser/enabled", 1)
+            carb.settings.get_settings().destroy_item("/omni/replicator/pathTracedMotionBlurSubSamples")
         else:
             print(f"[RenderingSettings] Setting RayTracedLighting render mode motion blur settings")
             carb.settings.get_settings().set("/rtx/rendermode", "RayTracedLighting")
@@ -144,25 +192,17 @@ class BaseScene(metaclass=ABCMeta):
             # (int): Number of samples to use in the filter. A higher number improves quality at the cost of performance.
             carb.settings.get_settings().set("/rtx/post/motionblur/numSamples", 8)
         
-        physx_scene = None
-        for prim in self.world.stage.Traverse():
-            if prim.IsA(UsdPhysics.Scene):
-                physx_scene = PhysxSchema.PhysxSceneAPI.Apply(prim)
-                break
+        physx_scene = self._get_physx_scene_api()
         if physx_scene is None:
             print(f"[MotionBlur] Creating a new PhysicsScene")
-            physics_scene = UsdPhysics.Scene.Define(self.world.stage, "/PhysicsScene")
+            UsdPhysics.Scene.Define(self.world.stage, "/PhysicsScene")
             physx_scene = PhysxSchema.PhysxSceneAPI.Apply(self.world.stage.GetPrimAtPath("/PhysicsScene"))
             # Check the target physics depending on the custom delta time and the render mode
         
         target_physics_fps = 1 / self.physics_dt
         self.motion_blur_physics_dt = self.physics_dt
-        if self.config.rendering_mode == "pathtracing":
-            target_physics_fps *= self.config.num_subsamples
-            self.motion_blur_physics_dt = self.physics_dt / self.config.num_subsamples
-            # Check if the physics FPS needs to be increased to match the custom delta time
         orig_physics_fps = physx_scene.GetTimeStepsPerSecondAttr().Get()
-        if target_physics_fps > orig_physics_fps:
+        if orig_physics_fps is None or abs(float(target_physics_fps) - float(orig_physics_fps)) > 1e-6:
             print(f"[MotionBlur] Changing physics FPS from {orig_physics_fps} to {target_physics_fps}")
             physx_scene.GetTimeStepsPerSecondAttr().Set(target_physics_fps)
         
@@ -170,13 +210,10 @@ class BaseScene(metaclass=ABCMeta):
         self.world.reset()
         self._timeline = None
         self.build_scene()
-    
+
     @property
     def get_simulation_current_time(self):
-        if self._timeline is not None:
-            return self._timeline.get_current_time()
-        else:
-            return -1
+        return float(self.world.current_time)
     
     """
     Build the scene by configuration file. 
@@ -188,6 +225,8 @@ class BaseScene(metaclass=ABCMeta):
         - Rendering Targets: GT Depth, GT Segmentation, GT Object Pose, GT 2D Bounding Box, etc..
     """
     def build_scene(self):
+        self.cameras = {}
+        self.sensor_controllers = {}
         self._load_scene_essentials(self.scene_usd)
         if self.spawn_random_objs:
             self.spawn_random_objects(min_dist_from_agent=4)
@@ -196,19 +235,23 @@ class BaseScene(metaclass=ABCMeta):
         # ── Physics must be initialized (world.reset) BEFORE any tensor API use ──
         # Standard Isaac Sim pattern: add prims → world.reset() → warmup steps → play
         self.world.reset()
+        self._initialize_cameras()
+        # self._initialize_sensor_controllers()
         print("[Main] Waiting for assets to load...")
         for _ in range(self.__warmup_steps):
+            # if DEBUG: print(f"[Warmup] Step {i+1}/{self.__warmup_steps}"),
             self.sim_app.update()
         print("[Main] Assets settled & Synthetic Data Generation Ready.")
         
         self._attach_annotators_to_camera("agent_camera")
+        for _ in range(20):
+            self.sim_app.update()
         print("[Timeline] Timeline setup for rendering control")
         self._timeline = omni.timeline.get_timeline_interface()
         self._timeline.set_current_time(0.0)
         self._timeline.play()
         self._timeline.commit()
-        self._previous_time = 0.0
-        self._elapsed_time = 0.0
+        self._camera_capture_start_time = self.get_simulation_current_time
         return     
     
     @property
@@ -232,19 +275,7 @@ class BaseScene(metaclass=ABCMeta):
         OR 
             - Empty Dictionary: (No rendered output. The sensor did not capture during the timestep, or the rendering is disabled.)
         """
-        if self.rendering_mode == "pathtracing":
-            i = 0
-            while i < 2 * self.config.num_subsamples:
-                rendered_data = self.__render_time_control(render=render)
-                if self.__check_valid_synthetic_data(rendered_data):
-                    break
-                i += 1
-        elif self.rendering_mode == "realtime":
-            self.world.step(render=render)
-            rendered_data = {
-                "rgb": self.agent_camera.get_rgb(),
-                **self.agent_camera.get_current_frame()
-            }
+        rendered_data = self.__render_time_control(render=render)
         
         if self.world.is_stopped() and not self.__reset_needed:
             self.__reset_needed = True
@@ -254,6 +285,8 @@ class BaseScene(metaclass=ABCMeta):
                 self.__reset_needed = False
         
         # # Rendering Agent Camera Only for now. Need to be generalized for multiple cameras.
+        if not render:
+            return rendered_data
         if self.__check_valid_synthetic_data(rendered_data):
             self._num_frame_steps += 1
         else:
@@ -287,7 +320,6 @@ class BaseScene(metaclass=ABCMeta):
         sun = UsdLux.DistantLight(sun_prim)
         sun.GetIntensityAttr().Set(intensity)
     
-    
     def __check_valid_synthetic_data(self, data: dict):
         if not data:
             return False
@@ -297,30 +329,241 @@ class BaseScene(metaclass=ABCMeta):
     
     def __render_time_control(self, render=True):
         """
-        Enforcing rendering frequency based on camera FPS.
-        In path tracing mode with motion blur, rep.orchestrator.step() internally
-        handles all sub-frame stepping (num_subsamples physics sub-steps per call).
-        Each call advances the simulation by exactly 1/camera_fps seconds and
-        produces one composited camera frame with motion blur.
+        Advance physics with the internal simulation dt, but only emit one camera
+        frame per 1 / camera_fps seconds. RGB is integrated manually across the
+        shutter interval so motion blur is controlled by shutter_time rather than
+        Replicator's built-in subframe combiner.
         """
-        self.world.step(render=render)
-        current_time = self._timeline.get_current_time()
-        print(f"[RenderControl] Current Time: {current_time:.4f} seconds, Elapsed Time: {self._elapsed_time:.4f} seconds")
-        delta_time = current_time - self._previous_time
-        self._elapsed_time += delta_time
+        frame_start_time = self._camera_capture_start_time
+        frame_end_time = frame_start_time + self._camera_frame_dt
+
+        if not render:
+            while self.get_simulation_current_time + 1e-9 < frame_end_time:
+                self.world.step(render=False)
+                self._num_steps += 1
+            self._camera_capture_start_time = frame_end_time
+            return {}
+
+        rendered_data = self._capture_camera_frame(
+            sensor_name="agent_camera",
+            frame_start_time=frame_start_time,
+            frame_end_time=frame_end_time,
+        )
+        self._camera_capture_start_time = frame_end_time
+        return rendered_data
+
+    def _initialize_cameras(self):
+        """
+        Initialize all cameras in the scene and set up sensor controllers for them.
+        """
+        for camera in self.cameras.values():
+            camera.set_dt(self._simulation_dt)
+            camera.initialize(attach_rgb_annotator=True)
         
-        agent_dt = 1.0 / self.agent_camera_fps
-        if self._elapsed_time >= agent_dt - 1e-9:
-            self._elapsed_time -= agent_dt
-            rendered_data = {
-                "rgb": self.agent_camera.get_rgb(),
-                **self.agent_camera.get_current_frame()
-            }
-        else: 
-            rendered_data = {}
+        for sensor_name, camera in self.cameras.items():
+            self.sensor_controllers[sensor_name] = self.SENSOR_CONTROLLER_CLS[self.sensor_control_algorithm](
+                sensor_name=sensor_name,
+                camera=camera,
+                camera_prim=self._get_camera_prim(sensor_name),
+                camera_fps=self.agent_camera_fps,
+            )
+
+    def _get_camera_prim(self, sensor_name: str):
+        if sensor_name not in self.cameras:
+            raise ValueError(f"Camera '{sensor_name}' is not registered.")
+        camera_prim_path = self.cameras[sensor_name].prim_path
+        cam_prim = self.world.stage.GetPrimAtPath(camera_prim_path)
+        if not cam_prim.IsValid():
+            raise ValueError(f"Camera prim path {camera_prim_path} is not valid.")
+        return cam_prim
+
+    def _get_camera_shutter_window_seconds(self, sensor_name: str):
+        return self.sensor_controllers[sensor_name].get_shutter_window_seconds(
+            max_frame_duration=self._camera_frame_dt
+        )
+
+    def _advance_simulation_without_render(self, target_time: float, leave_step_for_render: bool = False):
+        """
+        Advance simulation time without rendering until the target time.
+        If leave_step_for_render is True, stop one internal step before the target
+        so the next render=True step lands on the requested sample time.
+        """
+        while True:
+            current_time = self.get_simulation_current_time
+            next_time = current_time + self._simulation_dt
+            if leave_step_for_render:
+                if next_time >= float(target_time) - 1e-9:
+                    break
+            elif current_time >= float(target_time) - 1e-9:
+                break
+            self.world.step(render=False)
+            self._num_steps += 1
+
+    def _average_rgb_samples(self, rgb_samples: list, fallback_rgb: np.ndarray):
+        if rgb_samples:
+            averaged_rgb = np.mean(np.stack(rgb_samples, axis=0), axis=0)
+        elif fallback_rgb is not None and fallback_rgb.size != 0:
+            averaged_rgb = np.asarray(fallback_rgb, dtype=np.float32)
+        else:
+            return None
+
+        if fallback_rgb is not None and np.issubdtype(np.asarray(fallback_rgb).dtype, np.integer):
+            info = np.iinfo(np.asarray(fallback_rgb).dtype)
+            return np.clip(averaged_rgb, info.min, info.max).astype(np.asarray(fallback_rgb).dtype)
+        return averaged_rgb
+
+    def _get_motion_blur_samples(self, shutter_duration: float, available_samples: int) -> int:
+        if not self.config.enable_mb_adaptive_sampling:
+            # Hueristic threshold for motion blur sampling: 
+            # if shutter duration is very short, just do 1 sample to save computation. 
+            # Otherwise, use the configured number of subsamples.
+            if shutter_duration <= 0.003:
+                return 1
+            return max(1, min(int(self.config.num_subsamples), int(available_samples)))
+        if shutter_duration <= 1e-9 or available_samples <= 0:
+            return 1
+        max_samples = max(int(self.config.num_subsamples), 1)
+        if max_samples <= 1:
+            return 1
+
+        min_samples = max(1, min(int(self.config.min_motion_blur_subsamples), max_samples))
+        available_samples = max(0, int(available_samples))
+        scaled_samples = int(np.floor(max_samples * float(shutter_duration) / self._camera_frame_dt + 1e-9))
+        if scaled_samples <= 0:
+            return 1
+
+        effective_samples = min(max_samples, available_samples, scaled_samples)
+        if available_samples >= min_samples:
+            effective_samples = max(min_samples, effective_samples)
+            effective_samples = min(effective_samples, available_samples, max_samples)
+        return max(1, effective_samples)
+
+    def _build_render_sample_schedule(
+        self,
+        frame_start_time: float,
+        frame_end_time: float,
+        shutter_start_time: float,
+        shutter_end_time: float,
+        gt_reference_time: float,
+    ):
+        step_offsets = np.arange(1, self._sim_steps_per_camera_frame + 1, dtype=np.float64)
+        candidate_times = frame_start_time + step_offsets * self._simulation_dt
+        candidate_times[-1] = frame_end_time
+
+        if not self.capture_motion_blur or shutter_end_time <= shutter_start_time + 1e-9:
+            return [float(frame_end_time)]
+
+        shutter_mask = np.logical_and(
+            candidate_times >= shutter_start_time - 1e-9,
+            candidate_times <= shutter_end_time + 1e-9,
+        )
+        shutter_candidate_times = candidate_times[shutter_mask]
+        available_samples = int(shutter_candidate_times.size)
+        requested_samples = self._get_motion_blur_samples(
+            shutter_duration=shutter_end_time - shutter_start_time,
+            available_samples=available_samples,
+        )
+
+        if available_samples <= 0:
+            nearest_index = int(np.argmin(np.abs(candidate_times - gt_reference_time)))
+            return [float(candidate_times[nearest_index])]
+
+        if requested_samples >= available_samples:
+            return [float(sample_time) for sample_time in shutter_candidate_times]
+
+        sampled_indices = np.linspace(
+            0,
+            available_samples - 1,
+            num=requested_samples,
+            dtype=int,
+        )
+        return [float(shutter_candidate_times[index]) for index in sampled_indices]
+
+    def _capture_camera_frame(self, sensor_name: str, frame_start_time: float, frame_end_time: float):
+        camera = self.cameras[sensor_name]
+        shutter_start_offset, shutter_end_offset = self._get_camera_shutter_window_seconds(sensor_name)
+        shutter_start_time = frame_start_time + shutter_start_offset
+        shutter_end_time = frame_start_time + shutter_end_offset
         
-        self._num_steps += 1
-        self._previous_time = current_time
+        rgb_samples = []
+        latest_frame = camera.get_current_frame(clone=True)
+        representative_frame = latest_frame
+        gt_reference_time = (
+            0.5 * (shutter_start_time + shutter_end_time)
+            if shutter_end_time > shutter_start_time + 1e-9
+            else frame_end_time
+        )
+        render_schedule = self._build_render_sample_schedule(
+            frame_start_time=frame_start_time,
+            frame_end_time=frame_end_time,
+            shutter_start_time=shutter_start_time,
+            shutter_end_time=shutter_end_time,
+            gt_reference_time=gt_reference_time,
+        )
+        representative_frame_distance = float("inf")
+        last_unique_render_time = (
+            float(latest_frame.get("rendering_time"))
+            if latest_frame and latest_frame.get("rendering_time", None) is not None
+            else float("-inf")
+        )
+
+        if DEBUG: 
+            print("[RenderControl] Capturing frame: frame_time={:.3f}, shutter_window=({:.3f}, {:.3f}), current_time={:.3f}, frame_end_time={:.3f}, scheduled_renders={}".format(
+                frame_start_time,
+                shutter_start_time,
+                shutter_end_time,
+                self.get_simulation_current_time,
+                frame_end_time,
+                len(render_schedule),
+            ))
+
+        for scheduled_render_time in render_schedule:
+            self._advance_simulation_without_render(
+                target_time=scheduled_render_time,
+                leave_step_for_render=True,
+            )
+            self.world.step(render=True)
+            self._num_steps += 1
+            current_time = self.get_simulation_current_time
+            if DEBUG:
+                print(
+                    f"[RenderControl] Render sample: "
+                    f"current_time={current_time:.6f}, "
+                    f"scheduled_time={scheduled_render_time:.6f}, "
+                    f"simulation_dt={self._simulation_dt:.6f}"
+                )
+            latest_frame = camera.get_current_frame(clone=True)
+            latest_render_time = (
+                float(latest_frame.get("rendering_time"))
+                if latest_frame and latest_frame.get("rendering_time", None) is not None
+                else current_time
+            )
+            if latest_render_time <= last_unique_render_time + 1e-9:
+                if DEBUG:
+                    print(
+                        "[RenderControl] Skipping duplicate render sample at "
+                        f"sim_time={latest_render_time:.6f}"
+                    )
+                continue
+            last_unique_render_time = latest_render_time
+            frame_distance = abs(latest_render_time - gt_reference_time)
+            if frame_distance <= representative_frame_distance + 1e-9:
+                representative_frame = latest_frame
+                representative_frame_distance = frame_distance
+            if shutter_start_time - 1e-9 <= latest_render_time <= shutter_end_time + 1e-9:
+                sample_rgb = camera.get_rgb()
+                if sample_rgb is None or sample_rgb.size == 0:
+                    return
+                rgb_samples.append(np.asarray(sample_rgb, dtype=np.float32))
+            elif not self.capture_motion_blur:
+                rgb_samples = [np.asarray(camera.get_rgb(), dtype=np.float32)]
+
+        self._advance_simulation_without_render(target_time=frame_end_time)
+
+        latest_rgb = representative_frame.get("rgb", None) if representative_frame else None
+        final_rgb = self._average_rgb_samples(rgb_samples, latest_rgb)
+        rendered_data = dict(representative_frame) if representative_frame else {}
+        rendered_data["rgb"] = final_rgb
         return rendered_data
     
     def _define_robot_agent(
@@ -447,11 +690,9 @@ class BaseScene(metaclass=ABCMeta):
             camera = add_reference_to_stage(usd_path=camera_usd_path, prim_path=camera_prim_path)
         self.cameras[cam_name] = Camera(
             prim_path=camera_prim_path,
-            frequency=self.agent_camera_fps,
             resolution=self.agent_camera_resolution,
             position=camera_position, # external camera의 position을 그대로 사용
         )
-        self.cameras[cam_name].initialize(attach_rgb_annotator=True)
         return camera
     
     def _modify_external_camera(
@@ -502,17 +743,10 @@ class BaseScene(metaclass=ABCMeta):
 
         self.cameras["agent_camera"] = Camera(
             prim_path=cam_real_prim_path,
-            frequency=self.agent_camera_fps,
             resolution=self.agent_camera_resolution,
             position=cam_rel_position,
             annotator_device="cpu"
         )
-        self.cameras["agent_camera"].initialize(attach_rgb_annotator=True) # 
-        
-        ## Set Exposure API
-        cam_prim = self.world.stage.GetPrimAtPath(cam_real_prim_path)
-        cam_prim.ApplyAPI("OmniRtxCameraExposureAPI_1")
-        
         return self.cameras["agent_camera"]
     
     def _attach_annotators_to_camera(self, camera_name:str):
@@ -558,19 +792,3 @@ class BaseScene(metaclass=ABCMeta):
             print(f"[Viewport] Set camera → {camera_path} (active: {current})")
         except Exception as e:
             print(f"[Viewport] Error: {e}")
-    
-
-
-
-# # ── Agent prim에 붙어 있는 Camera prim path 자동 탐색 ─────────────────────
-#         agent_prim = self.world.stage.GetPrimAtPath(self.agent_prim_path)
-#         discovered_cam_path = None
-#         if agent_prim.IsValid():
-#             for prim in Usd.PrimRange(agent_prim):
-#                 if prim.IsA(UsdGeom.Camera):
-#                     discovered_cam_path = str(prim.GetPath())
-#                     print(f"[Camera] Agent prim 하위에서 Camera prim 발견: {discovered_cam_path}")
-#                     break
-#         if discovered_cam_path is None:
-#             print(f"[Camera] Agent prim({self.agent_prim_path}) 하위에 Camera prim 없음. 설정값 사용: {cam_real_prim_path}")
-#         # ─────────────────────────────────────────────────────────────────────────
