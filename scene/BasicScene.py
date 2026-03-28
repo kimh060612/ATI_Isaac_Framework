@@ -486,6 +486,7 @@ class BaseScene(metaclass=ABCMeta):
         shutter_end_time = frame_start_time + shutter_end_offset
         
         rgb_samples = []
+        latest_rgb = None
         latest_frame = camera.get_current_frame(clone=True)
         representative_frame = latest_frame
         gt_reference_time = (
@@ -501,11 +502,6 @@ class BaseScene(metaclass=ABCMeta):
             gt_reference_time=gt_reference_time,
         )
         representative_frame_distance = float("inf")
-        last_unique_render_time = (
-            float(latest_frame.get("rendering_time"))
-            if latest_frame and latest_frame.get("rendering_time", None) is not None
-            else float("-inf")
-        )
 
         if DEBUG: 
             print("[RenderControl] Capturing frame: frame_time={:.3f}, shutter_window=({:.3f}, {:.3f}), current_time={:.3f}, frame_end_time={:.3f}, scheduled_renders={}".format(
@@ -533,34 +529,23 @@ class BaseScene(metaclass=ABCMeta):
                     f"simulation_dt={self._simulation_dt:.6f}"
                 )
             latest_frame = camera.get_current_frame(clone=True)
-            latest_render_time = (
-                float(latest_frame.get("rendering_time"))
-                if latest_frame and latest_frame.get("rendering_time", None) is not None
-                else current_time
-            )
-            if latest_render_time <= last_unique_render_time + 1e-9:
-                if DEBUG:
-                    print(
-                        "[RenderControl] Skipping duplicate render sample at "
-                        f"sim_time={latest_render_time:.6f}"
-                    )
-                continue
-            last_unique_render_time = latest_render_time
-            frame_distance = abs(latest_render_time - gt_reference_time)
+            current_rgb = camera.get_rgb()
+            if current_rgb is not None and current_rgb.size != 0:
+                latest_rgb = np.asarray(current_rgb)
+            sample_time = current_time
+            frame_distance = abs(sample_time - gt_reference_time)
             if frame_distance <= representative_frame_distance + 1e-9:
                 representative_frame = latest_frame
                 representative_frame_distance = frame_distance
-            if shutter_start_time - 1e-9 <= latest_render_time <= shutter_end_time + 1e-9:
-                sample_rgb = camera.get_rgb()
-                if sample_rgb is None or sample_rgb.size == 0:
+            if shutter_start_time - 1e-9 <= sample_time <= shutter_end_time + 1e-9:
+                if latest_rgb is None or latest_rgb.size == 0:
                     return
-                rgb_samples.append(np.asarray(sample_rgb, dtype=np.float32))
-            elif not self.capture_motion_blur:
-                rgb_samples = [np.asarray(camera.get_rgb(), dtype=np.float32)]
+                rgb_samples.append(np.asarray(latest_rgb, dtype=np.float32))
+            elif not self.capture_motion_blur and latest_rgb is not None and latest_rgb.size != 0:
+                rgb_samples = [np.asarray(latest_rgb, dtype=np.float32)]
 
         self._advance_simulation_without_render(target_time=frame_end_time)
 
-        latest_rgb = representative_frame.get("rgb", None) if representative_frame else None
         final_rgb = self._average_rgb_samples(rgb_samples, latest_rgb)
         rendered_data = dict(representative_frame) if representative_frame else {}
         rendered_data["rgb"] = final_rgb
