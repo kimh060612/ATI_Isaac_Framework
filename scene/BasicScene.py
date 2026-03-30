@@ -43,7 +43,8 @@ class BaseScene(metaclass=ABCMeta):
     }
     
     RENDERING_ANNOTATOR_TYPES = {
-        "depth": "distance_to_camera", # "distance_to_image_plane",
+        # refere to: https://docs.omniverse.nvidia.com/py/replicator/latest/source/extensions/omni.replicator.core/docs/API.html#default-annotators
+        "depth": "distance_to_image_plane", # "distance_to_image_plane", "distance_to_camera"
         "instance_segmentation": "semantic_segmentation",
         "2d_bounding_box": "bounding_box_2d_tight",
         "3d_bounding_box": "bounding_box_3d",
