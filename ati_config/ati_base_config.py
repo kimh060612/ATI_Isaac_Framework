@@ -54,7 +54,7 @@ class ATIBaseConfig:
             "motion_vectors"
         ]
         self.single_object_usd_paths = [
-            ("/Isaac/Props/Dolly/dolly.usd", 0),
+            ("/Isaac/Props/Dolly/dolly.usd", 5),
         ]
         self.props_object_usd_paths = [
             ("/Isaac/Props/YCB/Axis_Aligned_Physics", 40),
