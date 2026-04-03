@@ -20,9 +20,9 @@ simulation_app = SimulationApp(launch_config=CONFIG)
 from ati_utils.log_utils import configure_isaac_sim_logging
 
 # Enable Livestream extension
-from isaacsim.core.utils.extensions import enable_extension
-simulation_app.set_setting("/app/window/drawMouse", True)
-enable_extension("omni.services.livestream.nvcf")
+# from isaacsim.core.utils.extensions import enable_extension
+# simulation_app.set_setting("/app/window/drawMouse", True)
+# enable_extension("omni.services.livestream.nvcf")
 
 # Scene Building
 from scene import ATIDepthScene
