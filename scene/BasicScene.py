@@ -496,6 +496,10 @@ class BaseScene(metaclass=ABCMeta):
         return [float(shutter_candidate_times[index]) for index in sampled_indices]
 
     def _capture_camera_frame(self, sensor_name: str, frame_start_time: float, frame_end_time: float):
+        """
+        TODO: Apply stereo camera settings
+        """
+        
         camera = self.cameras[sensor_name]
         shutter_start_offset, shutter_end_offset = self._get_camera_shutter_window_seconds(sensor_name)
         shutter_duration = max(0.0, shutter_end_offset - shutter_start_offset)

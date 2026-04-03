@@ -31,6 +31,10 @@ class ATIBaseRobotConfig:
     def change_agent_camera_resolution(self, resolution: tuple):
         self.agent_camera_resolution = resolution   
     
+    """
+    TODO: Apply stereo camera settings. 
+    For stereo cameras, we may need to set different USD paths and prim paths for the left and right cameras.
+    """
     def set_limo_config(self):
         self.robot_name = "limo"
         self.change_agent_camera_resolution((640, 480))
