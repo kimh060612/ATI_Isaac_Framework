@@ -34,6 +34,7 @@ class ATIBaseRobotConfig:
     """
     TODO: Apply stereo camera settings. 
     For stereo cameras, we may need to set different USD paths and prim paths for the left and right cameras.
+    If isaac sim supports stereo camera settings in a more integrated way, we can update this config accordingly.
     """
     def set_limo_config(self):
         self.robot_name = "limo"
