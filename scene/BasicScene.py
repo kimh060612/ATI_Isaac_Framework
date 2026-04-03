@@ -181,7 +181,7 @@ class BaseScene(metaclass=ABCMeta):
             # manual-shutter experiment in test_mb_exp_time.py.
             carb.settings.get_settings().set("/rtx/pathtracing/totalSpp", self.config.pt_spp)
             carb.settings.get_settings().set("/rtx/pathtracing/clampSpp", self.config.pt_spp)
-            carb.settings.get_settings().set("/rtx/pathtracing/optixDenoiser/enabled", 0)
+            carb.settings.get_settings().set("/rtx/pathtracing/optixDenoiser/enabled", 1)
             carb.settings.get_settings().destroy_item("/omni/replicator/pathTracedMotionBlurSubSamples")
         else:
             print(f"[RenderingSettings] Setting RayTracedLighting render mode motion blur settings")
