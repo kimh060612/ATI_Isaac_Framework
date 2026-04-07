@@ -232,6 +232,7 @@ if __name__ == "__main__":
                     "rgb": [],
                     "depth": [],
                     "bbox": [],
+                    "pred_depth": []
                 }
                 lap_idx += 1
                 if VERBOSE: 
