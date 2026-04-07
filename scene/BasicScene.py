@@ -26,14 +26,13 @@ from isaacsim.storage.native import get_assets_root_path
 from isaacsim.core.utils.stage import add_reference_to_stage
 from isaacsim.core.utils.viewports import set_camera_view
 
-from isaacsim.robot.wheeled_robots.controllers.holonomic_controller import HolonomicController
 from isaacsim.robot.wheeled_robots.robots import WheeledRobot
 from isaacsim.core.prims import SingleArticulation
-from isaacsim.robot.wheeled_robots.robots.holonomic_robot_usd_setup import HolonomicRobotUsdSetup
 from isaacsim.sensors.camera import Camera
 
 from ati_config import ATIBaseConfig, DEBUG
 from sensor_control import BaseSensorController, ShutterExposureSensorController
+from ati_utils.iso_noise_processing import add_d455_noise
 from tqdm import tqdm
 
 class BaseScene(metaclass=ABCMeta):
@@ -99,7 +98,7 @@ class BaseScene(metaclass=ABCMeta):
         self._num_frame_steps = 0
         self._num_steps = 0
         self.__reset_needed = False
-        self.__warmup_steps = 60
+        self.__warmup_steps = 20
         self._camera_capture_start_time = 0.0
         self._pt_external_frame_counter = 0
         
@@ -241,13 +240,13 @@ class BaseScene(metaclass=ABCMeta):
         self._initialize_cameras()
         # self._initialize_sensor_controllers()
         print("[Main] Waiting for assets to load...")
-        for _ in range(self.__warmup_steps):
+        for _ in tqdm(range(self.__warmup_steps)):
             # if DEBUG: print(f"[Warmup] Step {i+1}/{self.__warmup_steps}"),
             self.sim_app.update()
         print("[Main] Assets settled & Synthetic Data Generation Ready.")
         
         self._attach_annotators_to_camera("agent_camera")
-        for _ in range(20):
+        for _ in tqdm(range(self.__warmup_steps)):
             self.sim_app.update()
         print("[Timeline] Timeline setup for rendering control")
         self._timeline = omni.timeline.get_timeline_interface()
@@ -584,7 +583,10 @@ class BaseScene(metaclass=ABCMeta):
 
         final_rgb = self._average_rgb_samples(rgb_samples, latest_rgb)
         rendered_data = dict(representative_frame) if representative_frame else dict(latest_frame)
-        rendered_data["rgb"] = final_rgb
+        rendered_data["rgb"] = add_d455_noise(
+            final_rgb, 
+            iso=self.sensor_controllers[sensor_name].get_control_parameters().get("iso", 100)
+        ) 
         return rendered_data
     
     def _define_robot_agent(

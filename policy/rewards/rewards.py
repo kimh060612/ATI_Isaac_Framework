@@ -1,0 +1,50 @@
+from policy.rewards.utils import *
+from l3_perception_layer import TTATransform
+from PIL import Image
+
+def reward_flipped_img(
+    original_rgb,
+    depth_original,
+    depth_flipped,
+    image_weight: float = 0.1,
+    depth_weight: float = 0.9,
+):
+    sharp_original = motion_blur_score(original_rgb) # _bounded_score( , scale=0.01)
+    depth_flipped = Image.fromarray(depth_flipped).transpose(Image.FLIP_LEFT_RIGHT)
+    depth_flipped = np.asarray(depth_flipped)
+    depth_diff = np.abs(depth_original - depth_flipped)
+    depth_diff = (depth_diff - np.min(depth_diff)) / (np.max(depth_diff) - np.min(depth_diff) + 1e-6)
+    depth_diff = float(np.mean(depth_diff))
+    depth_confidence = float(np.exp(-depth_diff))
+    
+    total_reward = image_weight * sharp_original + depth_weight * depth_confidence
+    
+    return {
+        "reward": float(total_reward),
+        "image_reward": float(sharp_original),
+        "depth_reward": float(depth_confidence),
+        "uncertainty": float(depth_diff),
+    }
+
+def reward_test_time_augment(
+    rgb: np.ndarray,
+    inverse_depths: list[np.ndarray],
+    uncertainty_reduction: str,
+    image_weight: float = 0.1,
+    depth_weight: float = 0.9,
+) -> dict:
+    _, uncertainty = compute_tta_uncertainty(
+        inverse_depths=inverse_depths,
+        reduction=uncertainty_reduction,
+    )
+    image_reward = motion_blur_score(rgb) # compute_composite_image_quality(rgb).score
+    # motion_blur_score(rgb)
+    confidence = float(np.exp(-uncertainty))
+    total_reward = image_weight * image_reward + depth_weight * confidence
+
+    return {
+        "reward": float(total_reward),
+        "image_reward": float(image_reward),
+        "depth_reward": float(confidence),
+        "uncertainty": float(uncertainty),
+    }
