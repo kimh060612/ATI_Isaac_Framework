@@ -78,7 +78,7 @@ if __name__ == "__main__":
     
     ## L2 Policy and Reward Layer Setup
     set_deterministic(RANDOM_SEED)
-    context_light = [50, 250, 1000, 3000, 6000]  # Example light intensity values for the agent's context
+    context_light = [200, 1000, 3000, 6000, 9000]  # Example light intensity values for the agent's context
     context_agent_speed = [0.2, 0.5, 1.0, 1.5, 2.0]  # Example speed values for the agent's context
     sensor_param_space = SensorParamSpace()
     l2_policy = L2SharedLinUCBRGBCamPolicy(
@@ -123,6 +123,7 @@ if __name__ == "__main__":
         "rgb": [],
         "depth": [],
         "bbox": [],
+        "pred_depth": []
     }
     wandb_run = initialize_wandb(exp_name=f"atil2l3_kaya_depthany_{l3_mde_config.reward_type}")
     log_context_history = []
@@ -143,27 +144,28 @@ if __name__ == "__main__":
             
             rgb_image: np.array = syn_data.get("rgb", None)
             gt_depth: np.array = syn_data.get(my_scene.get_anno("depth"), None)
-            # bbox_data: np.array = syn_data.get(my_scene.get_anno("2d_bounding_box"), None)
+            bbox_data: np.array = syn_data.get(my_scene.get_anno("2d_bounding_box"), None)
             if rgb_image is None or rgb_image.size == 0:
                 if VERBOSE: print("Warning: Received empty RGB image. Skipping this step.")
                 continue
             if gt_depth is None or gt_depth.size == 0:
                 if VERBOSE: print("Warning: Received empty ground-truth depth image. Skipping this step.")
                 continue
-            # if bbox_data is None or bbox_data["data"].size == 0:
-            #     print(bbox_data)
-            #     if VERBOSE: print("Warning: Received empty bounding box data. Skipping this step.")
-            #     continue
+            if bbox_data is None or bbox_data["data"].size == 0:
+                print(bbox_data)
+                if VERBOSE: print("Warning: Received empty bounding box data. Skipping this step.")
+                continue
             syn_data_cache["rgb"].append(rgb_image)
             syn_data_cache["depth"].append(gt_depth)
-            # syn_data_cache["bbox"].append(bbox_data)
+            syn_data_cache["bbox"].append(bbox_data)
             
             pred_depths, metric_info = mde_model.predict_depth([Image.fromarray(rgb_image)], gt_depth)
-            if VERBOSE: print(f"Depth Prediction Metrics: {metric_info}")
+            syn_data_cache["pred_depth"].append(pred_depths if isinstance(pred_depths, np.ndarray) else pred_depths[0])
+            if DEBUG: print(f"Depth Prediction Metrics: {metric_info}")
             
             if l3_mde_config.reward_type == "flipped":
                 if not np.any(pred_depths[0]):
-                    if VERBOSE: print("[Fatal Error] Predicted depth is empty or all zeros.")
+                    if DEBUG: print("[Fatal Error] Predicted depth is empty or all zeros.")
                     raise ValueError("[Fatal Error] Predicted depth is empty or all zeros.")    
                 observation_info = {
                     "original_rgb": np.array(rgb_image),
@@ -190,6 +192,7 @@ if __name__ == "__main__":
                 },
                 observations=observation_info
             )
+            if DEBUG: print("[DEBUG]Policy Step Reward Result:", result["reward_info"])
             curr_exposure_idx = result["next_exposure_idx"]
             curr_iso_idx = result["next_iso_idx"]
             log_reward_history.append(result["reward_info"])
@@ -210,8 +213,8 @@ if __name__ == "__main__":
             if (step + 1) % CHANGE_CONTEXT_EVERY == 0 and step > 0:
                 wandb_run.log(
                     {
-                        "light_intensity": curr_light,
-                        "agent_speed": curr_speed,
+                        "context/light_intensity": curr_light,
+                        "context/agent_speed": curr_speed,
                         **get_eval_averages(log_context_history, key_category="context"),
                         **get_eval_averages(log_reward_history, key_category="reward"),
                         **get_eval_averages(log_performance_history, key_category="performance"),

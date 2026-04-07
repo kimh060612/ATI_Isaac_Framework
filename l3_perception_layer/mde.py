@@ -57,7 +57,7 @@ class L3PLayerDepthAnythingv2:
         elif self.reward_type == "test_time_augment":
             pred_depths = self.__predict_depth_with_tta(images)
             eval_pred_depth = select_eval_prediction(
-                inverse_depths=pred_depths[0],
+                inverse_depths=pred_depths,
                 transforms=self.transforms,
                 prediction_mode=self.l3_config.prediction_mode,
             )
@@ -85,7 +85,8 @@ class L3PLayerDepthAnythingv2:
     def __predict_depth_with_tta(self, images: Sequence[Image.Image | np.ndarray]) -> list[np.ndarray]:
         infer_list = self.__build_tta_inference_batch(images)
         predictions = self.model(infer_list)
-        inverse_depths = self.__invert_tta_depth_predictions(predictions, num_original_images=len(images))
+        # Only one image (Designed for later version with batch support, currently batch size is 1 for simplicity and stability)
+        inverse_depths = self.__invert_tta_depth_predictions(predictions, num_original_images=len(images))[0] 
         return inverse_depths
 
     def __build_tta_inference_batch(
@@ -128,12 +129,16 @@ class L3PLayerDepthAnythingv2:
         self,
         gt,
         pred,
-        align_mode="scale_shift",
+        align_mode=None,   # None, "median", "scale_shift"
         eps=1e-8,
     ):
         gt = np.asarray(gt).astype(np.float64)
         pred = np.asarray(pred).astype(np.float64)
 
+        if gt.shape != pred.shape:
+            raise ValueError(f"Shape mismatch: gt {gt.shape}, pred {pred.shape}")
+
+        # 1) valid mask
         valid = np.isfinite(gt) & np.isfinite(pred)
         valid &= (gt > self.min_depth) & (gt < self.max_depth)
         valid &= (pred > 0)
@@ -143,23 +148,35 @@ class L3PLayerDepthAnythingv2:
         gt_valid = gt[valid]
         pred_valid = pred[valid]
 
-        if align_mode == "scale_shift":
-            a = np.stack([pred_valid, np.ones_like(pred_valid)], axis=1)
-            x, _, _, _ = np.linalg.lstsq(a, gt_valid, rcond=None)
-            scale, shift = x
-            pred_valid = scale * pred_valid + shift
-        elif align_mode is not None:
-            raise ValueError(f"Unknown align_mode: {align_mode}")
+        # 2) optional alignment for relative-depth prediction
+        if align_mode is not None:
+            if align_mode == "median":
+                scale = np.median(gt_valid) / (np.median(pred_valid) + eps)
+                pred_valid = pred_valid * scale
 
+            elif align_mode == "scale_shift":
+                # solve: gt ≈ s * pred + t
+                A = np.stack([pred_valid, np.ones_like(pred_valid)], axis=1)  # [N, 2]
+                x, _, _, _ = np.linalg.lstsq(A, gt_valid, rcond=None)
+                s, t = x
+                pred_valid = s * pred_valid + t
+
+            else:
+                raise ValueError(f"Unknown align_mode: {align_mode}")
+
+        # 3) clamp after alignment
         pred_valid = np.clip(pred_valid, self.min_depth, self.max_depth)
         gt_valid = np.clip(gt_valid, self.min_depth, self.max_depth)
 
+        # 4) metrics
         thresh = np.maximum(gt_valid / (pred_valid + eps), pred_valid / (gt_valid + eps))
         a1 = (thresh < 1.25).mean()
         a2 = (thresh < 1.25 ** 2).mean()
         a3 = (thresh < 1.25 ** 3).mean()
+
         rmse = np.sqrt(np.mean((gt_valid - pred_valid) ** 2))
         rmse_log = np.sqrt(np.mean((np.log(gt_valid + eps) - np.log(pred_valid + eps)) ** 2))
+
         abs_rel = np.mean(np.abs(gt_valid - pred_valid) / (gt_valid + eps))
         sq_rel = np.mean(((gt_valid - pred_valid) ** 2) / (gt_valid + eps))
 
@@ -194,7 +211,7 @@ class L3PLayerDepthAnythingv2:
         gt_depth = gt_depth[mask]
         gt_depth = 1 / gt_depth
 
-        metrics = self.__compute_errors_numpy(gt_depth, pred_depth)
+        metrics = self.__compute_errors_numpy(gt_depth, pred_depth, align_mode="median")
         if verbose:
             print(
                 "[MDE Result on step {:03d}] | abs_rel: {:.2f} | sq_rel {:.2f} | rmse {:.2f} | "
