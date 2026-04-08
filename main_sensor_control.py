@@ -204,6 +204,14 @@ if __name__ == "__main__":
                     "image_weight": 0.1,
                     "depth_weight": 0.9,
                 }
+            elif l3_mde_config.reward_type == "oracle":
+                observation_info = {
+                    "original_rgb": np.array(rgb_image),
+                    "abs_rel_error": metric_info["abs_rel"],
+                    "delta_1": metric_info["a1"],
+                    "image_weight": 0.1,
+                    "depth_weight": 0.9,
+                }
             
             result = l2_policy.step(
                 context_information={
