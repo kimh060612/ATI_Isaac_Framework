@@ -24,8 +24,8 @@ class L3PLayerDepthAnythingv2:
         self.min_depth = l3_config.min_depth
         self.max_depth = l3_config.max_depth
         self.reward_type = l3_config.reward_type
-        if not self.reward_type in ["flipped", "test_time_augment"]:
-            raise ValueError(f"Invalid reward_type: {self.reward_type}. Must be one of ['flipped', 'test_time_augment']")
+        if not self.reward_type in ["flipped", "test_time_augment", "oracle"]:
+            raise ValueError(f"Invalid reward_type: {self.reward_type}. Must be one of ['flipped', 'test_time_augment', 'oracle']")
         if not self.model_name in [
             "depth-anything/Depth-Anything-V2-Small-hf", 
             "depth-anything/Depth-Anything-V2-Base-hf"
@@ -61,8 +61,11 @@ class L3PLayerDepthAnythingv2:
                 transforms=self.transforms,
                 prediction_mode=self.l3_config.prediction_mode,
             )
+        elif self.reward_type == "oracle":
+            pred_depths = np.array(self.model(images)[0]["depth"])
+            eval_pred_depth = pred_depths[...]
         else:
-            raise ValueError(f"Invalid reward_type: {self.reward_type}. Must be one of ['flipped', 'test_time_augment']")
+            raise ValueError(f"Invalid reward_type: {self.reward_type}. Must be one of ['flipped', 'test_time_augment', 'oracle']")
         
         metric_info = self.__evaluate_l3_depth(
             eval_pred_depth,
@@ -72,7 +75,6 @@ class L3PLayerDepthAnythingv2:
             verbose=True,
         )
         return pred_depths, metric_info
-        
 
     def __predict_depth_flipped(self, images: Sequence[Image.Image | np.ndarray]) -> list[np.ndarray]:
         rgb = [ images[0], images[0].transpose(Image.FLIP_LEFT_RIGHT) ]
