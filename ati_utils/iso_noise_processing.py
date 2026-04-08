@@ -1,7 +1,8 @@
+from typing import Union
 import numpy as np
 
 def add_d455_noise(
-    clean_uint8: np.array, 
+    clean_uint8: Union[np.ndarray, None], 
     iso: float, 
     read_noise_e: float = 2.0, 
     photon_scale: float = 40.0
@@ -28,6 +29,8 @@ def add_d455_noise(
     -------
     noisy_uint8  : ndarray [H,W,3] uint8
     """
+    if clean_uint8 is None:
+        return None
     iso_gain = iso / 100.0
     signal = clean_uint8.astype(np.float64)
 
