@@ -21,42 +21,59 @@ from ati_utils.log_utils import configure_isaac_sim_logging, save_synthetic_data
 from scene import ATIDepthScene
 from ati_config import ATIBaseConfig, ATIBaseRobotConfig, L3MDEConfig
 from l3_perception_layer import L3PLayerDepthAnythingv2, set_deterministic
-from policy.rewards.rewards import reward_flipped_img, reward_test_time_augment
+from policy.rewards.rewards import reward_flipped_img, reward_test_time_augment, reward_oracle
 from policy import L2SharedLinUCBRGBCamPolicy, SensorParamSpace
+import argparse
 from PIL import Image
-from time import time
 import traceback
 import wandb
 import numpy as np
 import random
 import os 
 
+parser = argparse.ArgumentParser(description="ATI Sensor Control with L2-L3 Feedback Loop in Isaac Sim")
+parser.add_argument("--exp_name", type=str, default="atil2l3_kaya_depthany_oracle", help="Name of the experiment for logging purposes")
+parser.add_argument("--reward_type", type=str, default="oracle", choices=["flipped", "test_time_augment", "oracle"], help="Type of reward function to use for the L2 policy")
+parser.add_argument("--data_path", type=str, default="/issac-sim/dataset/experiment_mde_prototype/kaya_awesome_naming", help="Directory path to save synthetic data and logs")
+parser.add_argument("--max_laps", type=int, default=600, help="Maximum number of laps (context changes) to run in the simulation")
+parser.add_argument("--lap_period", type=int, default=30, help="Number of steps per lap (context change period)")
+args = parser.parse_args()
+
 RANDOM_SEED = 42
-CHANGE_CONTEXT_EVERY = 30
-MAX_LAPS = 600
-MAX_STEPS = CHANGE_CONTEXT_EVERY * MAX_LAPS
 VERBOSE=True
 DEBUG = True
 
-# Which directory name will be cool and awesome?
-## Plz recommend some fun, cool, sexy directory names...
-DATA_PATH = "/issac-sim/dataset/experiment_mde_prototype/kaya_awesome_naming"
-
-def initialize_wandb(exp_name=None):
+def initialize_wandb(context_len, max_laps, max_steps, exp_name=None):
     return wandb.init(
         entity="artificial_tripartite_intelligence_team",
         project="ati_sensor_control_prototype",
         name=exp_name,
         config={
             "policy_type": "L2SharedLinUCBRGBCamPolicy",
-            "turn_per_lap": CHANGE_CONTEXT_EVERY,
-            "max_laps": MAX_LAPS,
-            "max_steps": MAX_STEPS,
+            "turn_per_lap": context_len,
+            "max_laps": max_laps,
+            "max_steps": max_steps,
             "l3_mde_model": "Depth-Anything-V2-Small-hf",
         },
     )
 
+def select_reward_function(reward_type: str):
+    if reward_type == "flipped":
+        return reward_flipped_img
+    elif reward_type == "test_time_augment":
+        return reward_test_time_augment
+    elif reward_type == "oracle":
+        return reward_oracle
+    else:
+        raise ValueError(f"Invalid reward_type: {reward_type}. Must be one of ['flipped', 'test_time_augment', 'oracle']")
+
 if __name__ == "__main__":
+    # Which directory name will be cool and awesome?
+    ## Plz recommend some fun, cool, sexy directory names...
+    CHANGE_CONTEXT_EVERY = args.lap_period
+    DATA_PATH = args.data_path
+    MAX_LAPS = args.max_laps
+    MAX_STEPS = CHANGE_CONTEXT_EVERY * MAX_LAPS
     
     # Isaac Sim Scene Setup
     configure_isaac_sim_logging() # Set Isaac Sim logging level to Error to avoid cluttering
@@ -84,7 +101,7 @@ if __name__ == "__main__":
     l2_policy = L2SharedLinUCBRGBCamPolicy(
         sensor_names="agent_camera",
         sensor_config=sensor_param_space,
-        reward_function=reward_test_time_augment, # reward_flipped_img or reward_test_time_augment
+        reward_function=select_reward_function(args.reward_type), # reward_flipped_img or reward_test_time_augment or reward_oracle
         alpha=1.0,
         random_seed=RANDOM_SEED,
     )
@@ -103,7 +120,7 @@ if __name__ == "__main__":
     
     ## L3 Perception Layer Setup
     l3_mde_config = L3MDEConfig(
-        reward_type="test_time_augment", # "flipped" or "test_time_augment"
+        reward_type=args.reward_type, # "flipped" or "test_time_augment" or "oracle"
         model_name="depth-anything/Depth-Anything-V2-Small-hf",
         shift_ratios=(0.02, 0.05, 0.1),
         zoom_factors=(0.9, 1.1),
@@ -125,7 +142,12 @@ if __name__ == "__main__":
         "bbox": [],
         "pred_depth": []
     }
-    wandb_run = initialize_wandb(exp_name=f"atil2l3_kaya_depthany_{l3_mde_config.reward_type}")
+    wandb_run = initialize_wandb(
+        context_len=CHANGE_CONTEXT_EVERY,
+        max_laps=MAX_LAPS,
+        max_steps=MAX_STEPS,
+        exp_name=f"ati_kaya_depthany_{l3_mde_config.reward_type}_{args.exp_name}"
+    )
     log_context_history = []
     log_reward_history = []
     log_performance_history = []

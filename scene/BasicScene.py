@@ -292,7 +292,8 @@ class BaseScene(metaclass=ABCMeta):
         if self.__check_valid_synthetic_data(rendered_data):
             self._num_frame_steps += 1
         else:
-            raise ValueError("No RGB data captured. Check the camera settings and rendering mode.")
+            print("[Warning] No valid synthetic data captured at step {}.\nCheck the camera settings and rendering mode.".format(self.num_steps))
+            # raise ValueError("No RGB data captured. Check the camera settings and rendering mode.")
         return rendered_data 
     
     @abstractmethod

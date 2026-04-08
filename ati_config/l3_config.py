@@ -2,7 +2,7 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class L3MDEConfig:
-    reward_type: str = "flipped"  # Options: "flipped", "test_time_augment"
+    reward_type: str = "flipped"  # Options: ["flipped", "test_time_augment", "oracle"]
     max_depth: float = 80.0
     min_depth: float = 0.01
     model_name: str = "depth-anything/Depth-Anything-V2-Small-hf"  # Options: "depth-anything/Depth-Anything-V2-Small-hf", "depth-anything/Depth-Anything-V2-Base-hf"
@@ -15,8 +15,8 @@ class L3MDEConfig:
     prediction_mode: str = "mean"  # Options: "mean", "identity"
     
     def __post_init__(self):
-        if self.reward_type not in ["flipped", "test_time_augment"]:
-            raise ValueError(f"Invalid reward_type: {self.reward_type}. Must be one of ['flipped', 'test_time_augment']")
+        if self.reward_type not in ["flipped", "test_time_augment", "oracle"]:
+            raise ValueError(f"Invalid reward_type: {self.reward_type}. Must be one of ['flipped', 'test_time_augment', 'oracle']")
         if self.model_name not in [
             "depth-anything/Depth-Anything-V2-Small-hf", 
             "depth-anything/Depth-Anything-V2-Base-hf"

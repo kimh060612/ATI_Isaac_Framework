@@ -2,6 +2,24 @@ from policy.rewards.utils import *
 from l3_perception_layer import TTATransform
 from PIL import Image
 
+def reward_oracle(
+    original_rgb,
+    abs_rel_error,
+    delta_1,
+    image_weight: float = 0.1,
+    depth_weight: float = 0.9,
+):
+    sharp_original = motion_blur_score(original_rgb) # _bounded_score( , scale=0.01)
+    depth_reward = (1.0 - min(abs_rel_error, 1.0)) / 2 + delta_1 / 2
+    total_reward = image_weight * sharp_original + depth_weight * depth_reward
+    
+    return {
+        "reward": float(total_reward),
+        "image_reward": float(sharp_original),
+        "depth_reward": float(depth_reward),
+        "uncertainty": float(np.exp(-depth_reward)),
+    }
+
 def reward_flipped_img(
     original_rgb,
     depth_original,
