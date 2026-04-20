@@ -36,7 +36,7 @@ os.environ["PYOPENGL_PLATFORM"] = "egl" # For headless rendering with PyOpenGL.
 os.environ["EGL_DEVICE_ID"] = "0" # Set to the appropriate GPU index if multiple GPUs are present.
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
-DATA_SAVE_PATH = "/issac-sim/dataset/experiment_isaac_rendering/ati_limo_rendering_test" # mb_iso_tradeoff_subsample16_camerafps
+DATA_SAVE_PATH = "/issac-sim/dataset/experiment_isaac_rendering/exp_limo_rt_rendering_reward" # mb_iso_tradeoff_subsample16_camerafps
 
 def save_status(lap_idx, iso_idx, st_idx, speed_idx, light_idx, d_time=None):
     with open(os.path.join(DATA_SAVE_PATH, "status_log.txt"), "a") as f:
@@ -64,7 +64,7 @@ if __name__ == "__main__":
         name="ati_rendering_limo_test",
         robot_config=limo_config,
     )
-    scene_config.set_rendering_mode("pathtracing") # "pathtracing" or "realtime"
+    scene_config.set_rendering_mode("realtime") # "pathtracing" or "realtime"
     scene_config.set_pathtracing_param(spp=128, num_subsamples=32) # Only effective when rendering_mode is "pathtracing"
     scene_config.set_random_obj_spawn(True)
     limo_scene = ATIDepthScene(
@@ -84,8 +84,8 @@ if __name__ == "__main__":
     prev_step = 0
     lap_idx = 0
     
-    agent_linear_context = [2.0, 4.0]   # [m/s] LIMO max ≈ 1.5 m/s; 2.0 exceeds stable physics range for R=0.3m
-    agent_context_light = [1000, 2000, 3000, 4000, 5000]
+    agent_linear_context = [2.0, 3.0]   # [m/s] LIMO max ≈ 1.5 m/s; 2.0 exceeds stable physics range for R=0.3m
+    agent_context_light = [200, 1000, 3000, 4000, 6000]
     
     shutter_time_list = [0.002, 0.004, 0.008, 0.016, 0.032] # in seconds
     iso_list = [200, 400, 600, 800, 1600]

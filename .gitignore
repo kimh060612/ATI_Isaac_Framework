@@ -3,3 +3,4 @@ __pycache__/*
 custom_usd/WegoLimo
 custom_usd/WegoLimo/*
 wandb
+.vscode/*

@@ -33,7 +33,7 @@ import os
 
 TIME_REPUTATION = 1000
 ONE_LAP_PERIOD = 20
-DATA_SAVE_PATH = "/issac-sim/dataset/experiment_isaac_rendering/kaya_motion_blur_test" # /home/ati/ATI_research/dataset/test_isaacsim_sdg/data/
+DATA_SAVE_PATH = "/issac-sim/dataset/experiment_isaac_rendering/exp_kaya_rt_rendering_reward" # /home/ati/ATI_research/dataset/test_isaacsim_sdg/data/
 
 def save_status(lap_idx, iso_idx, st_idx, speed_idx, light_idx, d_time=None):
     with open(os.path.join(DATA_SAVE_PATH, "status_log.txt"), "a") as f:
@@ -48,14 +48,15 @@ if __name__ == "__main__":
         name="ati_rendering_test",
         robot_config=kaya_config,
     )
-    render_config.set_rendering_mode("pathtracing")
+    render_config.set_rendering_mode("realtime")
     render_config.set_pathtracing_param(spp=128, num_subsamples=32)
     my_scene = ATIDepthScene(
         simulation_app,
         config=render_config,
         physics_dt=render_config.physics_dt,
         rendering_dt=render_config.rendering_dt,
-        stage_units_in_meters=render_config.stage_units_in_meters
+        stage_units_in_meters=render_config.stage_units_in_meters,
+        seed=20260420
     )
     os.makedirs(DATA_SAVE_PATH, exist_ok=True)
     os.makedirs(os.path.join(DATA_SAVE_PATH, "rgb"), exist_ok=True)

@@ -34,6 +34,7 @@ class ATIBaseConfig:
     agent_camera_resolution = (640, 480)
     require_external_camera: bool = True
     spawn_random_objs: bool = True
+    min_distance_from_agent: float = 5.0 # Minimum distance from the agent for randomly spawned objects
     robot_config: ATIBaseRobotConfig
     camera_controller: str = "exposure_iso_controller"
     
@@ -54,10 +55,10 @@ class ATIBaseConfig:
             "motion_vectors"
         ]
         self.single_object_usd_paths = [
-            ("/Isaac/Props/Dolly/dolly.usd", 5),
+            ("/Isaac/Props/Dolly/dolly.usd", 8),
         ]
         self.props_object_usd_paths = [
-            ("/Isaac/Props/YCB/Axis_Aligned_Physics", 40),
+            ("/Isaac/Props/YCB/Axis_Aligned_Physics", 50),
         ]
         self.external_cameras: List[Tuple[str, str, np.ndarray, np.ndarray]] = [ # camera name, prim path, position, target position
             (

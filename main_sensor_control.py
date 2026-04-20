@@ -83,7 +83,7 @@ if __name__ == "__main__":
         name="ati_rendering_test",
         robot_config=kaya_config,
     )
-    render_config.set_rendering_mode("pathtracing")
+    render_config.set_rendering_mode("realtime")
     render_config.set_pathtracing_param(spp=128, num_subsamples=32)
     my_scene = ATIDepthScene(
         simulation_app,

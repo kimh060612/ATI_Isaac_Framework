@@ -231,7 +231,7 @@ class BaseScene(metaclass=ABCMeta):
         self.sensor_controllers = {}
         self._load_scene_essentials(self.scene_usd)
         if self.spawn_random_objs:
-            self.spawn_random_objects(min_dist_from_agent=4)
+            self.spawn_random_objects(min_dist_from_agent=self.config.min_distance_from_agent)
         
         self.__rendering_settings()
         # ── Physics must be initialized (world.reset) BEFORE any tensor API use ──
@@ -791,8 +791,12 @@ class BaseScene(metaclass=ABCMeta):
             UsdGeom.Xformable(obj_prim).AddTranslateOp()
         if not obj_prim.GetAttribute("xformOp:rotateXYZ"):
             UsdGeom.Xformable(obj_prim).AddRotateXYZOp()
-        for _ in range(100):
-            x, y = random.uniform(-6, 6), random.uniform(-6, 6)
+        for _ in range(100): 
+            # Object will be randomly spawned in the range of 3 times minimum distance from the agent to ensure enough distribution
+            spawn_rage = 3 * min_dist_from_agent
+            min_x, min_y = agent_pos[0] - spawn_rage, agent_pos[1] - spawn_rage
+            max_x, max_y = agent_pos[0] + spawn_rage, agent_pos[1] + spawn_rage
+            x, y = random.uniform(min_x, max_x), random.uniform(min_y, max_y)
             dist = (Gf.Vec2f(x, y) - Gf.Vec2f(agent_pos[0], agent_pos[1])).GetLength()
             if dist > min_dist_from_agent:
                 obj_prim.GetAttribute("xformOp:translate").Set((x, y, 0))
