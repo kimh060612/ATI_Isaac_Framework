@@ -13,7 +13,7 @@ class ATIBaseConfig:
     # against camera_fps and motion-blur sampling needs.
     rendering_dt: float = 1. / 30 
     stage_units_in_meters: float = 1.0
-    rendering_mode: str = "pathtracing"  # "realtime" or "pathtracing"
+    rendering_mode: str = "pathtracing"  # "realtime" or "pathtracing" or "autoexposure"
     capture_motion_blur: bool = True
     pt_spp: int = 128  
     enable_mb_adaptive_sampling: bool = True  # Whether to enable adaptive sampling for pathtracing
@@ -96,8 +96,11 @@ class ATIBaseConfig:
         self.agent_camera_fps = fps
     
     def set_rendering_mode(self, mode):
-        if mode not in ["realtime", "pathtracing"]:
-            raise ValueError(f"Unsupported rendering mode: {mode}. Supported modes are 'realtime' and 'pathtracing'.")
+        if mode not in ["realtime", "pathtracing", "autoexposure"]:
+            raise ValueError(
+                f"Unsupported rendering mode: {mode}. "
+                "Supported modes are 'realtime', 'pathtracing', and 'autoexposure'."
+            )
         self.rendering_mode = mode
     
     def set_pathtracing_param(self, spp, num_subsamples, min_motion_blur_subsamples=None):

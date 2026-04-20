@@ -54,6 +54,12 @@ class ATIDepthScene(BaseScene):
     def get_anno(self, anno_name):
         return self.RENDERING_ANNOTATOR_TYPES[anno_name]
 
+    def get_sensor_control_params(self, sensor_name="agent_camera") -> dict:
+        if sensor_name not in self.sensor_controllers:
+            raise ValueError(f"Sensor '{sensor_name}' does not have a controller.")
+        controller = self.sensor_controllers[sensor_name]
+        return controller.get_control_parameters()
+    
     def sensor_control(
         self, 
         sensor_name="agent_camera", 
@@ -64,6 +70,8 @@ class ATIDepthScene(BaseScene):
         For now, I'll implement the control logic for...
         ISO, Shutter Time, Aperture
         """
+        if self.rendering_mode == "autoexposure":
+            raise RuntimeError("Manual sensor control is not allowed in 'autoexposure' rendering mode.")
         if sensor_name not in self.sensor_controllers:
             raise ValueError(f"Sensor '{sensor_name}' does not have a controller.")
         controller = self.sensor_controllers[sensor_name]

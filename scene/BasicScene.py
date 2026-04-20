@@ -152,7 +152,55 @@ class BaseScene(metaclass=ABCMeta):
                 return PhysxSchema.PhysxSceneAPI.Apply(prim)
         return None
     
+    def __ae_rendering_settings(self):
+        if self.rendering_mode != "autoexposure":
+            print(f"[RenderingSettings] Setting Auto-Exposure render mode settings")
+            raise ValueError(f"rendering_mode must be 'autoexposure' to use auto-exposure settings, got '{self.rendering_mode}'.")
+
+        carb.settings.get_settings().set_bool("/rtx/post/histogram/enabled", True)  # enable auto-exposure
+        carb.settings.get_settings().set_bool("/rtx/post/tonemap/autoExposure/enabled", True)
+        carb.settings.get_settings().set_int("/rtx/post/aa/autoExposureMode", 1)
+        
+        carb.settings.get_settings().set("/app/player/useFixedTimeStepping", True)
+        carb.settings.get_settings().set("/app/runLoops/main/rateLimitEnabled", True)
+        carb.settings.get_settings().set("/app/runLoops/main/rateLimitFrequency", self._internal_render_fps)
+        carb.settings.get_settings().set("/app/stage/timeCodesPerSecond", float(self._internal_render_fps))
+        carb.settings.get_settings().set("rtx/post/dlss/execMode", 2)
+        carb.settings.get_settings().set("/omni/replicator/captureOnPlay", True) # True 
+        carb.settings.get_settings().set("/omni/replicator/captureMotionBlur", True)
+        carb.settings.get_settings().set_bool("/rtx/post/motionblur/enabled", True)
+        
+        print(f"[RenderingSettings] Setting RayTracedLighting render mode motion blur settings")
+        carb.settings.get_settings().set("/rtx/rendermode", "RayTracedLighting")
+        # 0: Disabled, 1: TAA, 2: FXAA, 3: DLSS, 4:RTXAA
+        carb.settings.get_settings().set("/rtx/post/aa/op", 2)
+        # (float): The fraction of the largest screen dimension to use as the maximum motion blur diameter.
+        carb.settings.get_settings().set("/rtx/post/motionblur/maxBlurDiameterFraction", 0.02)
+        # (float): Exposure time fraction in frames (1.0 = one frame duration) to sample.
+        carb.settings.get_settings().set("/rtx/post/motionblur/exposureFraction", 1.0)
+        # (int): Number of samples to use in the filter. A higher number improves quality at the cost of performance.
+        carb.settings.get_settings().set("/rtx/post/motionblur/numSamples", 8)
+        
+        physx_scene = self._get_physx_scene_api()
+        if physx_scene is None:
+            print(f"[MotionBlur] Creating a new PhysicsScene")
+            UsdPhysics.Scene.Define(self.world.stage, "/PhysicsScene")
+            physx_scene = PhysxSchema.PhysxSceneAPI.Apply(self.world.stage.GetPrimAtPath("/PhysicsScene"))
+            # Check the target physics depending on the custom delta time and the render mode
+        
+        target_physics_fps = 1 / self.physics_dt
+        self.motion_blur_physics_dt = self.physics_dt
+        orig_physics_fps = physx_scene.GetTimeStepsPerSecondAttr().Get()
+        if orig_physics_fps is None or abs(float(target_physics_fps) - float(orig_physics_fps)) > 1e-6:
+            print(f"[MotionBlur] Changing physics FPS from {orig_physics_fps} to {target_physics_fps}")
+            physx_scene.GetTimeStepsPerSecondAttr().Set(target_physics_fps)
+        
+    
     def __rendering_settings(self):
+        if self.rendering_mode == "autoexposure":
+            print(f"[RenderingSettings] This configuration function is not for auto-exposure")
+            raise ValueError(f"rendering_mode must be 'realtime' or 'pathtracing' to use this rendering settings function, got '{self.rendering_mode}'.")
+        
         # ── Disable auto-exposure so camera exposure attributes take effect ──
         carb.settings.get_settings().set_bool("/rtx/post/histogram/enabled", False)        # disable auto-exposure
         carb.settings.get_settings().set_int("/rtx/post/tonemap/op", 1)                    # Linear: applies exposure, no tone curve
@@ -233,7 +281,11 @@ class BaseScene(metaclass=ABCMeta):
         if self.spawn_random_objs:
             self.spawn_random_objects(min_dist_from_agent=self.config.min_distance_from_agent)
         
-        self.__rendering_settings()
+        if not self.rendering_mode == "autoexposure":
+            self.__rendering_settings()
+        else:
+            self.__ae_rendering_settings()
+            
         # ── Physics must be initialized (world.reset) BEFORE any tensor API use ──
         # Standard Isaac Sim pattern: add prims → world.reset() → warmup steps → play
         self.world.reset()
@@ -277,7 +329,13 @@ class BaseScene(metaclass=ABCMeta):
         OR 
             - Empty Dictionary: (No rendered output. The sensor did not capture during the timestep, or the rendering is disabled.)
         """
-        rendered_data = self.__render_time_control(render=render)
+        if self.rendering_mode == "autoexposure":
+            self.world.step(render=render)
+            self._num_steps += 1
+            camera = self.cameras.get("agent_camera", None)
+            rendered_data = camera.get_current_frame(clone=True) if camera is not None else {}
+        else:
+            rendered_data = self.__render_time_control(render=render)
         
         if self.world.is_stopped() and not self.__reset_needed:
             self.__reset_needed = True

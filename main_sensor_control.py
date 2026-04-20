@@ -233,12 +233,17 @@ if __name__ == "__main__":
             })
             
             if DEBUG: print("[DEBUG] Sensor Control Action Taken - Exposure Index:", curr_exposure_idx, "ISO Index:", curr_iso_idx)
-            my_scene.sensor_control(
-                control_parameters={
-                    "iso": sensor_param_space.iso_values[curr_iso_idx],
-                    "shutter_time": sensor_param_space.exposure_values[curr_exposure_idx]
-                }
-            )
+            # If selected action does not make any changes, we can skip sending redundant control commands to the simulator.
+            ## Too frequent sensor control causes stale data issues in Isaac Sim, so we only send control commands when there is an actual change in parameters.
+            current_control_params = my_scene.get_sensor_control_params(sensor_name="agent_camera")
+            if current_control_params.get("iso", None) != sensor_param_space.iso_values[curr_iso_idx] or \
+                current_control_params.get("shutter_time", None) != sensor_param_space.exposure_values[curr_exposure_idx]:
+                    my_scene.sensor_control(
+                        control_parameters={
+                            "iso": sensor_param_space.iso_values[curr_iso_idx],
+                            "shutter_time": sensor_param_space.exposure_values[curr_exposure_idx],
+                        }
+                    )
 
             if (step + 1) % CHANGE_CONTEXT_EVERY == 0 and step > 0:
                 wandb_run.log(
