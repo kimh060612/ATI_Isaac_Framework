@@ -2,5 +2,6 @@ __pycache__/*
 *.pyc
 custom_usd/WegoLimo
 custom_usd/WegoLimo/*
+custom_usd/ati_indoor_experiment_stage/
 wandb
 .vscode/*

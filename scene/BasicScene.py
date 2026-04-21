@@ -695,7 +695,11 @@ class BaseScene(metaclass=ABCMeta):
         print(f"[Assets] Root: {self.assets_root_path}")
         
         try:
-            add_reference_to_stage(usd_path=self.assets_root_path + scene_usd_path, prim_path="/World/Environment")
+            first_directory = scene_usd_path.split("/")[1]
+            if first_directory == "Isaac":
+                add_reference_to_stage(usd_path=self.assets_root_path + scene_usd_path, prim_path="/World/Environment")
+            else:
+                add_reference_to_stage(usd_path=scene_usd_path, prim_path="/World/Environment")
         except Exception as e:
             carb.log_error(f"Failed to load scene USD: {scene_usd_path}. Error: {e}")
             raise e

@@ -9,7 +9,7 @@ CONFIG = {
     "height": 720,
     "window_width": 1920,
     "window_height": 1080,
-    "headless": True,
+    "headless": False,
     "hide_ui": False,
     "renderer": "RaytracedLighting",
     "display_options": 3286,
@@ -17,9 +17,9 @@ CONFIG = {
 simulation_app = SimulationApp(launch_config=CONFIG)
 
 # Enable Livestream extension
-# from isaacsim.core.utils.extensions import enable_extension
-# simulation_app.set_setting("/app/window/drawMouse", True)
-# enable_extension("omni.services.livestream.nvcf")
+from isaacsim.core.utils.extensions import enable_extension
+simulation_app.set_setting("/app/window/drawMouse", True)
+enable_extension("omni.services.livestream.nvcf")
 
 # Scene Building
 from ati_utils.log_utils import configure_isaac_sim_logging
@@ -33,7 +33,7 @@ import os
 
 TIME_REPUTATION = 1000
 ONE_LAP_PERIOD = 20
-DATA_SAVE_PATH = "/issac-sim/dataset/experiment_isaac_rendering/exp_kaya_rt_rendering_reward" # /home/ati/ATI_research/dataset/test_isaacsim_sdg/data/
+DATA_SAVE_PATH = "/issac-sim/dataset/experiment_isaac_rendering/exp_kaya_rt_custom_reward" # /home/ati/ATI_research/dataset/test_isaacsim_sdg/data/
 
 def save_status(lap_idx, iso_idx, st_idx, speed_idx, light_idx, d_time=None):
     with open(os.path.join(DATA_SAVE_PATH, "status_log.txt"), "a") as f:

@@ -21,7 +21,9 @@ class ATIBaseConfig:
     min_motion_blur_subsamples: int = 2  # Minimum samples used for any non-zero shutter interval
     
     
-    scene_usd: str = "/Isaac/Environments/Simple_Warehouse/warehouse.usd"
+    scene_usd: str = "/issac-sim/ati_project/ati_isaac_framework/custom_usd/ati_indoor_experiment_stage/ati_indoor_experiment_stage.usd"
+    # "/Isaac/Environments/Simple_Room/simple_room.usd"
+    # "/Isaac/Environments/Simple_Warehouse/warehouse.usd"
     # "/Isaac/Environments/Grid/gridroom_curved.usd"
     # "/Isaac/Environments/Simple_Warehouse/warehouse.usd"
     # "/Isaac/Environments/Grid/default_environment.usd"
@@ -55,10 +57,10 @@ class ATIBaseConfig:
             "motion_vectors"
         ]
         self.single_object_usd_paths = [
-            ("/Isaac/Props/Dolly/dolly.usd", 8),
+            ("/Isaac/Props/Dolly/dolly.usd", 0),
         ]
         self.props_object_usd_paths = [
-            ("/Isaac/Props/YCB/Axis_Aligned_Physics", 50),
+            ("/Isaac/Props/YCB/Axis_Aligned_Physics", 15),
         ]
         self.external_cameras: List[Tuple[str, str, np.ndarray, np.ndarray]] = [ # camera name, prim path, position, target position
             (
