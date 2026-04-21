@@ -211,7 +211,7 @@ class L3PLayerDepthAnythingv2:
         mask = np.logical_and(gt_depth > self.min_depth, gt_depth < self.max_depth)
         pred_depth = pred_depth[mask]
         gt_depth = gt_depth[mask]
-        # gt_depth = 1 / gt_depth
+        gt_depth = 1 / gt_depth
 
         metrics = self.__compute_errors_numpy(gt_depth, pred_depth, align_mode="median")
         if verbose:
