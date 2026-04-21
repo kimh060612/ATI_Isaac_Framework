@@ -1,6 +1,7 @@
 from typing import List, Tuple
 from .ati_robot_config import ATIBaseRobotConfig
 import numpy as np
+import os
 
 class ATIBaseConfig:
     """Configuration for rendering test."""
@@ -21,7 +22,7 @@ class ATIBaseConfig:
     min_motion_blur_subsamples: int = 2  # Minimum samples used for any non-zero shutter interval
     
     
-    scene_usd: str = "/issac-sim/ati_project/ati_isaac_framework/custom_usd/ati_indoor_experiment_stage/ati_indoor_experiment_stage.usd"
+    scene_usd: str = f"{os.getcwd()}/custom_usd/ati_indoor_experiment_stage/ati_indoor_experiment_stage.usd"
     # "/Isaac/Environments/Simple_Room/simple_room.usd"
     # "/Isaac/Environments/Simple_Warehouse/warehouse.usd"
     # "/Isaac/Environments/Grid/gridroom_curved.usd"
