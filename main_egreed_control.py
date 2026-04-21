@@ -250,7 +250,7 @@ if __name__ == "__main__":
     syn_data_cache = {
         "rgb": [],
         "depth": [],
-        "bbox": [],
+        # "bbox": [],
         "pred_depth": [],
     }
     log_context_history = []
@@ -290,14 +290,14 @@ if __name__ == "__main__":
                 if VERBOSE:
                     print("Warning: Received empty ground-truth depth image. Skipping this step.")
                 continue
-            if bbox_data is None or bbox_data["data"].size == 0:
-                if VERBOSE:
-                    print("Warning: Received empty bounding box data. Skipping this step.")
-                continue
+            # if bbox_data is None or bbox_data["data"].size == 0:
+            #     if VERBOSE:
+            #         print("Warning: Received empty bounding box data. Skipping this step.")
+            #     continue
 
             syn_data_cache["rgb"].append(rgb_image)
             syn_data_cache["depth"].append(gt_depth)
-            syn_data_cache["bbox"].append(bbox_data)
+            # syn_data_cache["bbox"].append(bbox_data)
 
             pred_depths, metric_info = mde_model.predict_depth([Image.fromarray(rgb_image)], gt_depth)
             syn_data_cache["pred_depth"].append(pred_depths if isinstance(pred_depths, np.ndarray) else pred_depths[0])
@@ -395,7 +395,7 @@ if __name__ == "__main__":
                 syn_data_cache = {
                     "rgb": [],
                     "depth": [],
-                    "bbox": [],
+                    # "bbox": [],
                     "pred_depth": [],
                 }
                 log_context_history = []
