@@ -20,6 +20,7 @@ CONFIG = {
 simulation_app = SimulationApp(launch_config=CONFIG)
 
 from ati_utils.log_utils import configure_isaac_sim_logging, save_synthetic_data, get_eval_averages
+from robot_control import build_default_context_trajectory
 from scene import ATIDepthScene
 from ati_config import ATIBaseConfig, ATIBaseRobotConfig, L3MDEConfig
 from l3_perception_layer import L3PLayerDepthAnythingv2, set_deterministic
@@ -207,6 +208,16 @@ if __name__ == "__main__":
     set_deterministic(RANDOM_SEED)
     context_light = [200, 1000, 3000, 6000, 9000]
     context_agent_speed = [0.2, 0.5, 1.0, 1.5, 2.0]
+    trajectory = build_default_context_trajectory(
+        light_values=context_light,
+        speed_values=[s * np.pi / 12 for s in context_agent_speed],
+        light_transition_steps=30 * 200,
+        speed_transition_steps=150,
+        light_hold_steps=30,
+        speed_hold_steps=15,
+        speed_phase_offset_steps=30,
+    )
+    
     sensor_param_space = SensorParamSpace()
     l2_policy = L2SharedEGreedyRGBCamPolicy(
         sensor_names="agent_camera",
@@ -272,10 +283,12 @@ if __name__ == "__main__":
                 print(f"Step: {step+1}/{MAX_STEPS}, Simulation Time: {my_scene.get_simulation_current_time:.4f} seconds")
 
             syn_data = my_scene.step(render=True)
+            context = trajectory.value_at(step)
+            my_scene.control_light_intensity(context["light_intensity"])
             my_scene.robot_control(
                 time=my_scene.get_simulation_current_time,
                 control_parameters={
-                    "angular_velocity": curr_speed,
+                    "angular_velocity": context["angular_velocity"],
                 },
             )
 
@@ -313,13 +326,14 @@ if __name__ == "__main__":
 
             result = l2_policy.step(
                 context_information={
-                    "light_intensity": curr_light,
-                    "angular_velocity": curr_speed,
+                    "light_intensity": context["light_intensity"],
+                    "angular_velocity": context["angular_velocity"],
                     "iso_idx": curr_iso_idx,
                     "exposure_idx": curr_exposure_idx,
                 },
                 observations=observation_info,
             )
+            
             if DEBUG:
                 print("[DEBUG] Policy Reward Result:", result["reward_info"])
                 print(
@@ -373,8 +387,8 @@ if __name__ == "__main__":
             if (step + 1) % CHANGE_CONTEXT_EVERY == 0 and step > 0:
                 wandb_run.log(
                     build_lap_log_payload(
-                        curr_light=curr_light,
-                        curr_speed=curr_speed,
+                        curr_light=context["light_intensity"],
+                        curr_speed=context["angular_velocity"],
                         log_context_history=log_context_history,
                         log_reward_history=log_reward_history,
                         log_performance_history=log_performance_history,
@@ -389,9 +403,9 @@ if __name__ == "__main__":
 
                 save_synthetic_data(DATA_PATH, syn_data_cache, lap_idx)
 
-                curr_light = float(rng.choice(context_light))
-                curr_speed = float(rng.choice(context_agent_speed)) * np.pi / 12
-                my_scene.control_light_intensity(curr_light)
+                # curr_light = float(rng.choice(context_light))
+                # curr_speed = float(rng.choice(context_agent_speed)) * np.pi / 12
+                # my_scene.control_light_intensity(curr_light)
                 syn_data_cache = {
                     "rgb": [],
                     "depth": [],
@@ -409,7 +423,7 @@ if __name__ == "__main__":
                 if VERBOSE:
                     print(
                         f"Context changed at step {step+1}: "
-                        f"Light Intensity set to {curr_light}, Agent Speed set to {curr_speed}"
+                        f"Light Intensity set to {context['light_intensity']}, Agent Speed set to {context['angular_velocity']}. "
                     )
 
             if step >= MAX_STEPS - 1:
@@ -433,8 +447,8 @@ if __name__ == "__main__":
         ):
             wandb_run.log(
                 build_lap_log_payload(
-                    curr_light=curr_light,
-                    curr_speed=curr_speed,
+                    curr_light=context["light_intensity"],
+                    curr_speed=context["angular_velocity"],
                     log_context_history=log_context_history,
                     log_reward_history=log_reward_history,
                     log_performance_history=log_performance_history,
