@@ -206,7 +206,8 @@ if __name__ == "__main__":
     )
 
     set_deterministic(RANDOM_SEED)
-    context_light = [200, 1000, 3000, 6000, 9000]
+    context_light = [1000,1000,1000,1000,1000]
+    # [200, 1000, 3000, 6000, 9000]
     context_agent_speed = [0.2, 0.5, 1.0, 1.5, 2.0]
     trajectory = build_default_context_trajectory(
         light_values=context_light,
