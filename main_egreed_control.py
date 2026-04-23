@@ -192,7 +192,7 @@ def build_lap_log_payload(
 
 if __name__ == "__main__":
     CHANGE_CONTEXT_EVERY = args.lap_period
-    DATA_PATH = f"{args.data_path}/{args.exp_name}_{args.reward_type}_{args.lap_period}steps_decay{args.epsilon_decay}_lr{args.learning_rate}"
+    DATA_PATH = f"{args.data_path}/experiment_{args.exp_name}_{args.reward_type}_{args.lap_period}steps_decay{args.epsilon_decay}_lr{args.learning_rate}"
     MAX_LAPS = args.max_laps
     MAX_STEPS = CHANGE_CONTEXT_EVERY * MAX_LAPS
     HEURISTIC_MEMORY_PATH = os.path.join(DATA_PATH, HEURISTIC_MEMORY_FILENAME)
@@ -215,11 +215,10 @@ if __name__ == "__main__":
     )
 
     set_deterministic(RANDOM_SEED)
-    context_light = [1000,1000,1000,1000,1000]
-    # [200, 1000, 3000, 6000, 9000]
+    context_light = [200, 1000, 3000, 6000, 9000]
     context_agent_speed = [0.2, 0.5, 1.0, 1.5, 2.0]
     trajectory = build_default_context_trajectory(
-        light_values=context_light,
+        light_values=[1000,1000,1000,1000,1000],
         speed_values=[s * np.pi / 12 for s in context_agent_speed],
         light_transition_steps=30 * 200,
         speed_transition_steps=150,
@@ -237,6 +236,13 @@ if __name__ == "__main__":
         epsilon_min=args.epsilon_min,
         epsilon_decay=args.epsilon_decay,
         learning_rate=args.learning_rate,
+        motion_thresholds=[ 
+            ((s + e) / 2) * (np.pi / 12) 
+            for (s, e) in zip(context_agent_speed[:-1], context_agent_speed[1:])
+        ],
+        light_thresholds=[
+            ((s + e) / 2) for (s, e) in zip(context_light[:-1], context_light[1:])
+        ],
         random_seed=RANDOM_SEED,
     )
     heuristic_offsets, state_update_counts = load_heuristic_memory(HEURISTIC_MEMORY_PATH)
