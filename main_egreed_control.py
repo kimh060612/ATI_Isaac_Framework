@@ -4,6 +4,7 @@ using an epsilon-greedy CMAB control policy.
 """
 
 from collections import Counter
+import os
 
 from isaacsim import SimulationApp
 
@@ -24,8 +25,11 @@ from robot_control import build_default_context_trajectory
 from scene import ATIDepthScene
 from ati_config import ATIBaseConfig, ATIBaseRobotConfig, L3MDEConfig
 from l3_perception_layer import L3PLayerDepthAnythingv2, set_deterministic
-from policy.rewards.rewards import reward_flipped_img, reward_test_time_augment, reward_oracle
 from policy import L2SharedEGreedyRGBCamPolicy, SensorParamSpace
+from policy import (
+    build_reward_override, load_heuristic_memory, save_heuristic_memory,
+    reward_flipped_img, reward_test_time_augment, reward_oracle
+)
 
 import argparse
 from PIL import Image
@@ -35,9 +39,9 @@ import numpy as np
 
 
 parser = argparse.ArgumentParser(description="ATI Sensor Control with epsilon-greedy L2-L3 feedback loop in Isaac Sim")
-parser.add_argument("--exp_name", type=str, default="atil2l3_kaya_depthany_egreedy", help="Name of the experiment for logging purposes")
+parser.add_argument("--exp_name", type=str, default="rt_egreedy", help="Name of the experiment for logging purposes")
 parser.add_argument("--reward_type", type=str, default="oracle", choices=["flipped", "test_time_augment", "oracle"], help="Type of reward function to use for the L2 policy")
-parser.add_argument("--data_path", type=str, default="/issac-sim/dataset/experiment_mde_prototype/kaya_egreedy_control", help="Directory path to save synthetic data and logs")
+parser.add_argument("--data_path", type=str, default="/issac-sim/dataset/experiment_mde_prototype", help="Directory path to save synthetic data and logs")
 parser.add_argument("--max_laps", type=int, default=600, help="Maximum number of laps (context changes) to run in the simulation")
 parser.add_argument("--lap_period", type=int, default=30, help="Number of steps per lap (context change period)")
 parser.add_argument("--epsilon_start", type=float, default=0.5, help="Initial exploration rate for epsilon-greedy control")
@@ -49,6 +53,10 @@ args = parser.parse_args()
 RANDOM_SEED = 42
 VERBOSE = True
 DEBUG = True
+WARMUP_LAPS = 10
+HEURISTIC_UPDATE_THRESHOLD = 30
+HEURISTIC_BLEND_ALPHA = 0.35
+HEURISTIC_MEMORY_FILENAME = f"heuristic_offsets_{args.exp_name}_{args.reward_type}.json"
 
 
 def initialize_wandb(context_len, max_laps, max_steps, exp_name=None):
@@ -184,9 +192,10 @@ def build_lap_log_payload(
 
 if __name__ == "__main__":
     CHANGE_CONTEXT_EVERY = args.lap_period
-    DATA_PATH = args.data_path
+    DATA_PATH = f"{args.data_path}/{args.exp_name}_{args.reward_type}_{args.lap_period}steps_decay{args.epsilon_decay}_lr{args.learning_rate}"
     MAX_LAPS = args.max_laps
     MAX_STEPS = CHANGE_CONTEXT_EVERY * MAX_LAPS
+    HEURISTIC_MEMORY_PATH = os.path.join(DATA_PATH, HEURISTIC_MEMORY_FILENAME)
 
     configure_isaac_sim_logging()
     kaya_config = ATIBaseRobotConfig(robot_name="kaya")
@@ -230,10 +239,18 @@ if __name__ == "__main__":
         learning_rate=args.learning_rate,
         random_seed=RANDOM_SEED,
     )
-    curr_exposure_idx = len(sensor_param_space.exposure_values) // 2
-    curr_iso_idx = len(sensor_param_space.iso_values) // 2
-    curr_light = context_light[len(context_light) // 2]
-    curr_speed = context_agent_speed[len(context_agent_speed) // 2] * np.pi / 12
+    heuristic_offsets, state_update_counts = load_heuristic_memory(HEURISTIC_MEMORY_PATH)
+    context = trajectory.value_at(0)
+    curr_light = context["light_intensity"]
+    curr_speed = context["angular_velocity"]
+    context = {
+        "light_intensity": curr_light,
+        "angular_velocity": curr_speed,
+    }
+    curr_exposure_idx, curr_iso_idx, _ = l2_policy.calculate_base_indices(
+        context_information=context,
+        heuristic_offsets=heuristic_offsets,
+    )
 
     my_scene.control_light_intensity(curr_light)
     my_scene.sensor_control(
@@ -255,7 +272,6 @@ if __name__ == "__main__":
         prediction_mode="identity",
     )
     mde_model = L3PLayerDepthAnythingv2(l3_config=l3_mde_config, device="cuda")
-    rng = np.random.default_rng(RANDOM_SEED)
 
     step = 0
     lap_idx = 0
@@ -295,7 +311,6 @@ if __name__ == "__main__":
 
             rgb_image: np.ndarray = syn_data.get("rgb", None)
             gt_depth: np.ndarray = syn_data.get(my_scene.get_anno("depth"), None)
-            bbox_data: np.ndarray = syn_data.get(my_scene.get_anno("2d_bounding_box"), None)
             if rgb_image is None or rgb_image.size == 0:
                 if VERBOSE:
                     print("Warning: Received empty RGB image. Skipping this step.")
@@ -324,68 +339,101 @@ if __name__ == "__main__":
                 pred_depths=pred_depths,
                 metric_info=metric_info,
             )
-
-            result = l2_policy.step(
-                context_information={
-                    "light_intensity": context["light_intensity"],
-                    "angular_velocity": context["angular_velocity"],
-                    "iso_idx": curr_iso_idx,
-                    "exposure_idx": curr_exposure_idx,
-                },
-                observations=observation_info,
-            )
-            
-            if DEBUG:
-                print("[DEBUG] Policy Reward Result:", result["reward_info"])
-                print(
-                    "[DEBUG] EGreedy Action:",
-                    result["action_description"],
-                    "State:",
-                    result["state"],
-                    "Mode:",
-                    result["selection_mode"],
-                    "Epsilon:",
-                    result["epsilon"],
-                )
-
-            curr_exposure_idx = result["next_exposure_idx"]
-            curr_iso_idx = result["next_iso_idx"]
-
-            log_reward_history.append(result["reward_info"])
+            reward_info = l2_policy.reward_function(**observation_info)
+            log_reward_history.append(reward_info)
             log_performance_history.append(metric_info)
-            log_context_history.append(
-                {
-                    "iso_idx": curr_iso_idx,
-                    "exposure_idx": curr_exposure_idx,
-                }
-            )
-            log_policy_history.append(build_policy_step_metrics(result))
-            log_state_history.append(result["state"])
-            update_metrics = build_policy_update_metrics(result["update_info"])
-            if update_metrics is not None:
-                log_policy_update_history.append(update_metrics)
-
-            if DEBUG:
-                print(
-                    "[DEBUG] Sensor Control Action Taken - Exposure Index:",
-                    curr_exposure_idx,
-                    "ISO Index:",
-                    curr_iso_idx,
-                )
-
-            # If selected action does not make any changes, we can skip sending redundant control commands to the simulator.
-            ## Too frequent sensor control causes stale data issues in Isaac Sim, so we only send control commands when there is an actual change in parameters.
-            current_control_params = my_scene.get_sensor_control_params(sensor_name="agent_camera")
-            if current_control_params.get("iso", None) != sensor_param_space.iso_values[curr_iso_idx] or \
-                current_control_params.get("shutter_time", None) != sensor_param_space.exposure_values[curr_exposure_idx]:
-                    my_scene.sensor_control(
-                        control_parameters={
-                            "iso": sensor_param_space.iso_values[curr_iso_idx],
-                            "shutter_time": sensor_param_space.exposure_values[curr_exposure_idx],
-                        }
-                    )
 
             if (step + 1) % CHANGE_CONTEXT_EVERY == 0 and step > 0:
+                lap_reward_info = build_reward_override(log_reward_history)
+                base_exposure_idx, base_iso_idx, base_state = l2_policy.calculate_base_indices(
+                    context_information=context,
+                    heuristic_offsets=heuristic_offsets,
+                )
+                is_warmup_lap = lap_idx < WARMUP_LAPS
+                result = l2_policy.step(
+                    context_information={
+                        "light_intensity": context["light_intensity"],
+                        "angular_velocity": context["angular_velocity"],
+                        "iso_idx": base_iso_idx,
+                        "exposure_idx": base_exposure_idx,
+                        "tie_break_random": False,
+                        "is_infer_mode": is_warmup_lap,
+                        "skip_update": is_warmup_lap,
+                    },
+                    observations={
+                        "reward_info_override": lap_reward_info,
+                    },
+                )
+
+                if DEBUG:
+                    print("[DEBUG] Lap Reward Result:", result["reward_info"])
+                    print(
+                        "[DEBUG] EGreedy Lap Action:",
+                        result["action_description"],
+                        "State:",
+                        result["state"],
+                        "Mode:",
+                        result["selection_mode"],
+                        "Epsilon:",
+                        result["epsilon"],
+                        "Warmup:",
+                        is_warmup_lap,
+                    )
+
+                curr_exposure_idx = result["next_exposure_idx"]
+                curr_iso_idx = result["next_iso_idx"]
+                log_context_history.append(
+                    {
+                        "base_iso_idx": float(base_iso_idx),
+                        "base_exposure_idx": float(base_exposure_idx),
+                        "iso_idx": float(curr_iso_idx),
+                        "exposure_idx": float(curr_exposure_idx),
+                    }
+                )
+                log_policy_history.append(build_policy_step_metrics(result))
+                log_state_history.append(result["state"])
+                update_metrics = build_policy_update_metrics(result["update_info"])
+                if update_metrics is not None:
+                    log_policy_update_history.append(update_metrics)
+                if l2_policy.update_long_term_memory(
+                    heuristic_offsets=heuristic_offsets,
+                    state_update_counts=state_update_counts,
+                    update_info=result["update_info"],
+                    update_threshold=HEURISTIC_UPDATE_THRESHOLD,
+                    blend_alpha=HEURISTIC_BLEND_ALPHA,
+                ):
+                    save_heuristic_memory(
+                        memory_path=HEURISTIC_MEMORY_PATH,
+                        heuristic_offsets=heuristic_offsets,
+                        state_update_counts=state_update_counts,
+                    )
+
+                if DEBUG:
+                    print(
+                        "[DEBUG] Base Sensor Indices - Exposure:",
+                        base_exposure_idx,
+                        "ISO:",
+                        base_iso_idx,
+                        "State:",
+                        base_state,
+                    )
+                    print(
+                        "[DEBUG] Sensor Control Action Taken - Exposure Index:",
+                        curr_exposure_idx,
+                        "ISO Index:",
+                        curr_iso_idx,
+                    )
+
+                current_control_params = my_scene.get_sensor_control_params(sensor_name="agent_camera")
+                if current_control_params.get("iso", None) != sensor_param_space.iso_values[curr_iso_idx] or \
+                    current_control_params.get("shutter_time", None) != sensor_param_space.exposure_values[curr_exposure_idx]:
+                        my_scene.sensor_control(
+                            control_parameters={
+                                "iso": sensor_param_space.iso_values[curr_iso_idx],
+                                "shutter_time": sensor_param_space.exposure_values[curr_exposure_idx],
+                            }
+                        )
+
                 wandb_run.log(
                     build_lap_log_payload(
                         curr_light=context["light_intensity"],
@@ -422,9 +470,11 @@ if __name__ == "__main__":
                 lap_idx += 1
 
                 if VERBOSE:
+                    warmup_msg = "warmup" if is_warmup_lap else "cmab"
                     print(
                         f"Context changed at step {step+1}: "
-                        f"Light Intensity set to {context['light_intensity']}, Agent Speed set to {context['angular_velocity']}. "
+                        f"Light Intensity set to {context['light_intensity']}, Agent Speed set to {context['angular_velocity']}, "
+                        f"Mode={warmup_msg}. "
                     )
 
             if step >= MAX_STEPS - 1:
@@ -463,6 +513,11 @@ if __name__ == "__main__":
             )
             if any(len(v) > 0 for v in syn_data_cache.values()):
                 save_synthetic_data(DATA_PATH, syn_data_cache, lap_idx)
+        save_heuristic_memory(
+            memory_path=HEURISTIC_MEMORY_PATH,
+            heuristic_offsets=heuristic_offsets,
+            state_update_counts=state_update_counts,
+        )
 
         print("[Main] Shutting down...")
         try:

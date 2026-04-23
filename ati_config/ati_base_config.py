@@ -37,7 +37,7 @@ class ATIBaseConfig:
     agent_camera_resolution = (640, 480)
     require_external_camera: bool = True
     spawn_random_objs: bool = True
-    min_distance_from_agent: float = 5.0 # Minimum distance from the agent for randomly spawned objects
+    min_distance_from_agent: float = 3.0 # Minimum distance from the agent for randomly spawned objects
     robot_config: ATIBaseRobotConfig
     camera_controller: str = "exposure_iso_controller"
     

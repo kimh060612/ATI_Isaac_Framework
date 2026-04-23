@@ -149,6 +149,123 @@ class L2SharedEGreedyRGBCamPolicy(BaseCMABPolicy):
 
         return f"{self.MOTION_STATES[motion_level]}_{self.LIGHT_STATES[light_level]}"
 
+    @staticmethod
+    def _linear_map_clipped(value: float, in_min: float, in_max: float, out_min: float, out_max: float) -> float:
+        if abs(in_max - in_min) <= 1e-12:
+            return float(out_min)
+        ratio = float(np.clip((value - in_min) / (in_max - in_min), 0.0, 1.0))
+        return float(out_min + ratio * (out_max - out_min))
+
+    @classmethod
+    def _log_map_clipped(cls, value: float, in_min: float, in_max: float, out_min: float, out_max: float) -> float:
+        safe_value = max(float(value), 1e-6)
+        safe_min = max(float(in_min), 1e-6)
+        safe_max = max(float(in_max), safe_min + 1e-6)
+        return cls._linear_map_clipped(
+            value=float(np.log(safe_value)),
+            in_min=float(np.log(safe_min)),
+            in_max=float(np.log(safe_max)),
+            out_min=out_min,
+            out_max=out_max,
+        )
+
+    @staticmethod
+    def _closest_index(values: Tuple[float, ...] | Tuple[int, ...], target: float) -> int:
+        arr = np.asarray(values, dtype=np.float64)
+        return int(np.argmin(np.abs(arr - float(target))))
+
+    def calculate_base_indices(
+        self,
+        context_information: dict,
+        heuristic_offsets: Optional[Dict[str, Tuple[float, float]]] = None,
+    ) -> Tuple[int, int, str]:
+        heuristic_offsets = heuristic_offsets or {}
+        exposure_values = np.asarray(self.cfg.exposure_values, dtype=np.float64)
+        iso_values = np.asarray(self.cfg.iso_values, dtype=np.float64)
+        motion_value = abs(float(context_information["angular_velocity"]))
+        light_value = float(context_information["light_intensity"])
+
+        motion_min = 0.0
+        motion_max = float(self.motion_thresholds[-1])
+        light_min = max(1.0, float(self.light_thresholds[0]))
+        light_max = float(self.light_thresholds[-1])
+
+        target_exposure_motion = self._linear_map_clipped(
+            value=motion_value,
+            in_min=motion_min,
+            in_max=motion_max,
+            out_min=float(exposure_values[-1]),
+            out_max=float(exposure_values[0]),
+        )
+        target_exposure_light = self._log_map_clipped(
+            value=max(light_value, light_min),
+            in_min=light_min,
+            in_max=light_max,
+            out_min=float(exposure_values[-1]),
+            out_max=float(exposure_values[0]),
+        )
+        target_exposure = min(target_exposure_motion, target_exposure_light)
+        base_exposure_idx = self._closest_index(self.cfg.exposure_values, target_exposure)
+
+        base_iso_from_light = self._log_map_clipped(
+            value=max(light_value, light_min),
+            in_min=light_min,
+            in_max=light_max,
+            out_min=float(iso_values[-1]),
+            out_max=float(iso_values[0]),
+        )
+        default_exposure = float(exposure_values[len(exposure_values) // 2])
+        iso_scale = default_exposure / max(target_exposure, 1e-12)
+        target_iso = base_iso_from_light * iso_scale
+        base_iso_idx = self._closest_index(self.cfg.iso_values, target_iso)
+
+        state = self.get_state_key(
+            angular_velocity=context_information["angular_velocity"],
+            light_intensity=context_information["light_intensity"],
+        )
+        if state in heuristic_offsets:
+            base_exposure_idx += int(np.rint(heuristic_offsets[state][0]))
+            base_iso_idx += int(np.rint(heuristic_offsets[state][1]))
+
+        base_exposure_idx = int(np.clip(base_exposure_idx, 0, self.n_exposure - 1))
+        base_iso_idx = int(np.clip(base_iso_idx, 0, self.n_iso - 1))
+        return base_exposure_idx, base_iso_idx, state
+
+    def update_long_term_memory(
+        self,
+        heuristic_offsets: Dict[str, Tuple[float, float]],
+        state_update_counts: Dict[str, int],
+        update_info: dict | None,
+        update_threshold: int = 30,
+        blend_alpha: float = 0.35,
+    ) -> bool:
+        if update_info is None:
+            return False
+
+        state = str(update_info["state"])
+        state_update_counts[state] = int(state_update_counts.get(state, 0)) + 1
+        if state_update_counts[state] < update_threshold:
+            return False
+
+        expected_rewards = self.expected_rewards.get(state)
+        if expected_rewards is None:
+            return False
+
+        best_action_idx = int(np.argmax(expected_rewards))
+        learned_action = tuple(self.action_space[best_action_idx])
+        existing_offset = heuristic_offsets.get(state)
+        if existing_offset is None:
+            heuristic_offsets[state] = (float(learned_action[0]), float(learned_action[1]))
+        else:
+            heuristic_offsets[state] = (
+                float(existing_offset[0] + (learned_action[0] * blend_alpha)),
+                float(existing_offset[1] + (learned_action[1] * blend_alpha)),
+            )
+
+        self.reset_state_with_bias(state, learned_action)
+        state_update_counts[state] = 0
+        return True
+
     def valid_actions(self, exposure_idx: int, iso_idx: int) -> List[Tuple[int, int]]:
         valid = []
         for de, di in self.action_space:
@@ -297,10 +414,15 @@ class L2SharedEGreedyRGBCamPolicy(BaseCMABPolicy):
         context_information: dict,
         observations: Dict[str, Union[np.ndarray, List[np.ndarray], float, str]],
     ) -> Dict[str, Union[float, int, str, Tuple[int, int], Dict[str, Union[int, float, str]]]]:
-        reward_info = self.reward_function(**observations)
+        reward_info_override = observations.get("reward_info_override") if isinstance(observations, dict) else None
+        if isinstance(reward_info_override, dict):
+            reward_info = dict(reward_info_override)
+        else:
+            reward_info = self.reward_function(**observations)
 
         update_info = None
-        if self.pending_update is not None:
+        skip_update = bool(context_information.get("skip_update", False))
+        if (not skip_update) and self.pending_update is not None:
             update_info = self.update_parameters(
                 (str(self.pending_update["state"]), int(self.pending_update["action_idx"])),
                 float(reward_info["reward"]),
@@ -308,7 +430,8 @@ class L2SharedEGreedyRGBCamPolicy(BaseCMABPolicy):
 
         sel = self.select_action(
             context_information=context_information,
-            tie_break_random=True,
+            tie_break_random=bool(context_information.get("tie_break_random", True)),
+            is_infer_mode=bool(context_information.get("is_infer_mode", False)),
         )
 
         action = sel["chosen_action"]
@@ -320,11 +443,12 @@ class L2SharedEGreedyRGBCamPolicy(BaseCMABPolicy):
         next_exposure_value = self.cfg.exposure_values[next_e_idx]
         next_iso_value = self.cfg.iso_values[next_i_idx]
 
-        self.pending_update = {
-            "state": sel["state"],
-            "action_idx": sel["chosen_action_idx"],
-            "action": action,
-        }
+        if not skip_update:
+            self.pending_update = {
+                "state": sel["state"],
+                "action_idx": sel["chosen_action_idx"],
+                "action": action,
+            }
 
         record = {
             "state": sel["state"],
