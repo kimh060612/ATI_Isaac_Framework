@@ -45,7 +45,6 @@ class ATIDepthScene(BaseScene):
         # Calling it again here would invalidate the PhysX SimView handles that
         # were just created, causing "Simulation view object is invalidated" errors.
         self.agent_controller.reset()
-        self.R = 3.0
 
     def reset(self):
         super().reset()
@@ -104,11 +103,25 @@ class ATIDepthScene(BaseScene):
             ))
 
         elif self.robot_config.robot_name == "kaya":
-            omega = control_parameters["angular_velocity"]
-            vx_w = -self.R * omega * np.sin(omega * time)
-            vy_w =  self.R * omega * np.cos(omega * time)
-            
-            self.agent.apply_wheel_actions(self.agent_controller.forward(command=[vx_w, vy_w, omega]))
+            # HolonomicController expects body-frame [forward, lateral, yaw] velocity.
+            # For in-place rotation we should keep the planar components at zero.
+            forward_velocity = float(
+                control_parameters.get(
+                    "linear_velocity_x",
+                    control_parameters.get("forward_velocity", 0.0),
+                )
+            )
+            lateral_velocity = float(
+                control_parameters.get(
+                    "linear_velocity_y",
+                    control_parameters.get("lateral_velocity", 0.0),
+                )
+            )
+            omega = float(control_parameters["angular_velocity"])
+
+            self.agent.apply_wheel_actions(
+                self.agent_controller.forward(command=[forward_velocity, lateral_velocity, omega])
+            )
         
         return 
     

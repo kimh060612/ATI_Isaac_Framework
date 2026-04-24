@@ -156,9 +156,43 @@ def build_policy_update_metrics(update_info: dict | None) -> dict | None:
     }
 
 
+def summarize_context_history(context_history: list[dict]) -> dict:
+    if not context_history:
+        return {
+            "light_intensity": 0.0,
+            "angular_velocity": 0.0,
+            "light_intensity_start": 0.0,
+            "light_intensity_end": 0.0,
+            "angular_velocity_start": 0.0,
+            "angular_velocity_end": 0.0,
+            "light_intensity_std": 0.0,
+            "angular_velocity_std": 0.0,
+            "num_samples": 0.0,
+        }
+
+    light_values = np.asarray([sample["light_intensity"] for sample in context_history], dtype=np.float64)
+    angular_values = np.asarray([sample["angular_velocity"] for sample in context_history], dtype=np.float64)
+    return {
+        "light_intensity": float(np.mean(light_values)),
+        "angular_velocity": float(np.mean(angular_values)),
+        "light_intensity_start": float(light_values[0]),
+        "light_intensity_end": float(light_values[-1]),
+        "angular_velocity_start": float(angular_values[0]),
+        "angular_velocity_end": float(angular_values[-1]),
+        "light_intensity_std": float(np.std(light_values)),
+        "angular_velocity_std": float(np.std(angular_values)),
+        "num_samples": float(len(context_history)),
+    }
+
+
+def sample_context_summary(trajectory, start_step: int, num_steps: int) -> dict:
+    samples = [trajectory.value_at(start_step + offset) for offset in range(num_steps)]
+    return summarize_context_history(samples)
+
+
 def build_lap_log_payload(
-    curr_light: float,
-    curr_speed: float,
+    current_context_summary: dict,
+    next_context_summary: dict,
     log_context_history: list[dict],
     log_reward_history: list[dict],
     log_performance_history: list[dict],
@@ -168,8 +202,17 @@ def build_lap_log_payload(
     policy: L2SharedEGreedyRGBCamPolicy,
 ) -> dict:
     payload = {
-        "context/light_intensity": curr_light,
-        "context/agent_speed": curr_speed,
+        "context/light_intensity": float(current_context_summary["light_intensity"]),
+        "context/agent_speed": float(current_context_summary["angular_velocity"]),
+        "context/light_intensity_start": float(current_context_summary["light_intensity_start"]),
+        "context/light_intensity_end": float(current_context_summary["light_intensity_end"]),
+        "context/agent_speed_start": float(current_context_summary["angular_velocity_start"]),
+        "context/agent_speed_end": float(current_context_summary["angular_velocity_end"]),
+        "context/light_intensity_std": float(current_context_summary["light_intensity_std"]),
+        "context/agent_speed_std": float(current_context_summary["angular_velocity_std"]),
+        "context/num_samples": float(current_context_summary["num_samples"]),
+        "policy_context/next_light_intensity": float(next_context_summary["light_intensity"]),
+        "policy_context/next_agent_speed": float(next_context_summary["angular_velocity"]),
         **average_history(log_context_history, key_category="context"),
         **average_history(log_reward_history, key_category="reward"),
         **average_history(log_performance_history, key_category="performance"),
@@ -196,6 +239,7 @@ if __name__ == "__main__":
     MAX_LAPS = args.max_laps
     MAX_STEPS = CHANGE_CONTEXT_EVERY * MAX_LAPS
     HEURISTIC_MEMORY_PATH = os.path.join(DATA_PATH, HEURISTIC_MEMORY_FILENAME)
+    RAD_COEFF = np.pi / 6
 
     configure_isaac_sim_logging()
     kaya_config = ATIBaseRobotConfig(robot_name="kaya")
@@ -218,8 +262,8 @@ if __name__ == "__main__":
     context_light = [200, 1000, 3000, 6000, 9000]
     context_agent_speed = [0.2, 0.5, 1.0, 1.5, 2.0]
     trajectory = build_default_context_trajectory(
-        light_values=[1000,1000,1000,1000,1000],
-        speed_values=[s * np.pi / 12 for s in context_agent_speed],
+        light_values=[1000, 1000, 1000, 1000, 1000],
+        speed_values=[s * RAD_COEFF for s in context_agent_speed],
         light_transition_steps=30 * 200,
         speed_transition_steps=150,
         light_hold_steps=30,
@@ -237,7 +281,7 @@ if __name__ == "__main__":
         epsilon_decay=args.epsilon_decay,
         learning_rate=args.learning_rate,
         motion_thresholds=[ 
-            ((s + e) / 2) * (np.pi / 12) 
+            ((s + e) / 2) * RAD_COEFF
             for (s, e) in zip(context_agent_speed[:-1], context_agent_speed[1:])
         ],
         light_thresholds=[
@@ -287,6 +331,7 @@ if __name__ == "__main__":
         # "bbox": [],
         "pred_depth": [],
     }
+    lap_context_samples = []
     log_context_history = []
     log_reward_history = []
     log_performance_history = []
@@ -305,8 +350,13 @@ if __name__ == "__main__":
             if VERBOSE:
                 print(f"Step: {step+1}/{MAX_STEPS}, Simulation Time: {my_scene.get_simulation_current_time:.4f} seconds")
 
-            syn_data = my_scene.step(render=True)
             context = trajectory.value_at(step)
+            lap_context_samples.append(
+                {
+                    "light_intensity": float(context["light_intensity"]),
+                    "angular_velocity": float(context["angular_velocity"]),
+                }
+            )
             my_scene.control_light_intensity(context["light_intensity"])
             my_scene.robot_control(
                 time=my_scene.get_simulation_current_time,
@@ -314,6 +364,7 @@ if __name__ == "__main__":
                     "angular_velocity": context["angular_velocity"],
                 },
             )
+            syn_data = my_scene.step(render=True)
 
             rgb_image: np.ndarray = syn_data.get("rgb", None)
             gt_depth: np.ndarray = syn_data.get(my_scene.get_anno("depth"), None)
@@ -350,16 +401,22 @@ if __name__ == "__main__":
             log_performance_history.append(metric_info)
 
             if (step + 1) % CHANGE_CONTEXT_EVERY == 0 and step > 0:
+                current_context_summary = summarize_context_history(lap_context_samples)
+                next_context_summary = sample_context_summary(
+                    trajectory=trajectory,
+                    start_step=step + 1,
+                    num_steps=CHANGE_CONTEXT_EVERY,
+                )
                 lap_reward_info = build_reward_override(log_reward_history)
                 base_exposure_idx, base_iso_idx, base_state = l2_policy.calculate_base_indices(
-                    context_information=context,
+                    context_information=next_context_summary,
                     heuristic_offsets=heuristic_offsets,
                 )
                 is_warmup_lap = lap_idx < WARMUP_LAPS
                 result = l2_policy.step(
                     context_information={
-                        "light_intensity": context["light_intensity"],
-                        "angular_velocity": context["angular_velocity"],
+                        "light_intensity": next_context_summary["light_intensity"],
+                        "angular_velocity": next_context_summary["angular_velocity"],
                         "iso_idx": base_iso_idx,
                         "exposure_idx": base_exposure_idx,
                         "tie_break_random": False,
@@ -432,7 +489,7 @@ if __name__ == "__main__":
 
                 current_control_params = my_scene.get_sensor_control_params(sensor_name="agent_camera")
                 if current_control_params.get("iso", None) != sensor_param_space.iso_values[curr_iso_idx] or \
-                    current_control_params.get("shutter_time", None) != sensor_param_space.exposure_values[curr_exposure_idx]:
+                            current_control_params.get("shutter_time", None) != sensor_param_space.exposure_values[curr_exposure_idx]:
                         my_scene.sensor_control(
                             control_parameters={
                                 "iso": sensor_param_space.iso_values[curr_iso_idx],
@@ -442,8 +499,8 @@ if __name__ == "__main__":
 
                 wandb_run.log(
                     build_lap_log_payload(
-                        curr_light=context["light_intensity"],
-                        curr_speed=context["angular_velocity"],
+                        current_context_summary=current_context_summary,
+                        next_context_summary=next_context_summary,
                         log_context_history=log_context_history,
                         log_reward_history=log_reward_history,
                         log_performance_history=log_performance_history,
@@ -467,6 +524,7 @@ if __name__ == "__main__":
                     # "bbox": [],
                     "pred_depth": [],
                 }
+                lap_context_samples = []
                 log_context_history = []
                 log_reward_history = []
                 log_performance_history = []
@@ -479,7 +537,8 @@ if __name__ == "__main__":
                     warmup_msg = "warmup" if is_warmup_lap else "cmab"
                     print(
                         f"Context changed at step {step+1}: "
-                        f"Light Intensity set to {context['light_intensity']}, Agent Speed set to {context['angular_velocity']}, "
+                        f"Observed Lap Context (avg) = ({current_context_summary['light_intensity']:.2f}, {current_context_summary['angular_velocity']:.4f}), "
+                        f"Next Policy Context (avg) = ({next_context_summary['light_intensity']:.2f}, {next_context_summary['angular_velocity']:.4f}), "
                         f"Mode={warmup_msg}. "
                     )
 
@@ -502,10 +561,16 @@ if __name__ == "__main__":
             or log_policy_update_history
             or log_state_history
         ):
+            current_context_summary = summarize_context_history(lap_context_samples)
+            next_context_summary = sample_context_summary(
+                trajectory=trajectory,
+                start_step=step + 1,
+                num_steps=CHANGE_CONTEXT_EVERY,
+            )
             wandb_run.log(
                 build_lap_log_payload(
-                    curr_light=context["light_intensity"],
-                    curr_speed=context["angular_velocity"],
+                    current_context_summary=current_context_summary,
+                    next_context_summary=next_context_summary,
                     log_context_history=log_context_history,
                     log_reward_history=log_reward_history,
                     log_performance_history=log_performance_history,

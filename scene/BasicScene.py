@@ -157,14 +157,15 @@ class BaseScene(metaclass=ABCMeta):
             print(f"[RenderingSettings] Setting Auto-Exposure render mode settings")
             raise ValueError(f"rendering_mode must be 'autoexposure' to use auto-exposure settings, got '{self.rendering_mode}'.")
 
+        cam_fps = self.agent_camera_fps
         carb.settings.get_settings().set_bool("/rtx/post/histogram/enabled", True)  # enable auto-exposure
         carb.settings.get_settings().set_bool("/rtx/post/tonemap/autoExposure/enabled", True)
         carb.settings.get_settings().set_int("/rtx/post/aa/autoExposureMode", 1)
         
         carb.settings.get_settings().set("/app/player/useFixedTimeStepping", True)
         carb.settings.get_settings().set("/app/runLoops/main/rateLimitEnabled", True)
-        carb.settings.get_settings().set("/app/runLoops/main/rateLimitFrequency", self._internal_render_fps)
-        carb.settings.get_settings().set("/app/stage/timeCodesPerSecond", float(self._internal_render_fps))
+        carb.settings.get_settings().set("/app/runLoops/main/rateLimitFrequency", cam_fps)
+        carb.settings.get_settings().set("/app/stage/timeCodesPerSecond", float(cam_fps))
         carb.settings.get_settings().set("rtx/post/dlss/execMode", 2)
         carb.settings.get_settings().set("/omni/replicator/captureOnPlay", True) # True 
         carb.settings.get_settings().set("/omni/replicator/captureMotionBlur", True)
@@ -188,8 +189,8 @@ class BaseScene(metaclass=ABCMeta):
             physx_scene = PhysxSchema.PhysxSceneAPI.Apply(self.world.stage.GetPrimAtPath("/PhysicsScene"))
             # Check the target physics depending on the custom delta time and the render mode
         
-        target_physics_fps = 1 / self.physics_dt
-        self.motion_blur_physics_dt = self.physics_dt
+        target_physics_fps = cam_fps
+        self.motion_blur_physics_dt = 1. / cam_fps
         orig_physics_fps = physx_scene.GetTimeStepsPerSecondAttr().Get()
         if orig_physics_fps is None or abs(float(target_physics_fps) - float(orig_physics_fps)) > 1e-6:
             print(f"[MotionBlur] Changing physics FPS from {orig_physics_fps} to {target_physics_fps}")
