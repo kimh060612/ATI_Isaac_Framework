@@ -350,7 +350,6 @@ if __name__ == "__main__":
             if VERBOSE:
                 print(f"Step: {step+1}/{MAX_STEPS}, Simulation Time: {my_scene.get_simulation_current_time:.4f} seconds")
 
-            context = trajectory.value_at(step)
             lap_context_samples.append(
                 {
                     "light_intensity": float(context["light_intensity"]),
@@ -532,7 +531,8 @@ if __name__ == "__main__":
                 log_policy_update_history = []
                 log_state_history = []
                 lap_idx += 1
-
+                context = trajectory.value_at(step)
+                
                 if VERBOSE:
                     warmup_msg = "warmup" if is_warmup_lap else "cmab"
                     print(
