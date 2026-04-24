@@ -213,7 +213,7 @@ class L3PLayerDepthAnythingv2:
         gt_depth = gt_depth[mask]
         gt_depth = 1 / gt_depth
 
-        metrics = self.__compute_errors_numpy(gt_depth, pred_depth, align_mode="median")
+        metrics = self.__compute_errors_numpy(gt_depth, pred_depth, align_mode="scale_shift")
         if verbose:
             print(
                 "[MDE Result on step {:03d}] | abs_rel: {:.2f} | sq_rel {:.2f} | rmse {:.2f} | "
