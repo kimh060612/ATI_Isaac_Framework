@@ -239,7 +239,7 @@ if __name__ == "__main__":
     MAX_LAPS = args.max_laps
     MAX_STEPS = CHANGE_CONTEXT_EVERY * MAX_LAPS
     HEURISTIC_MEMORY_PATH = os.path.join(DATA_PATH, HEURISTIC_MEMORY_FILENAME)
-    RAD_COEFF = np.pi / 6
+    RAD_COEFF = np.pi / 12
 
     configure_isaac_sim_logging()
     kaya_config = ATIBaseRobotConfig(robot_name="kaya")

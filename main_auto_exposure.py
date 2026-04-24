@@ -135,7 +135,8 @@ if __name__ == "__main__":
     DATA_PATH = args.data_path
     MAX_LAPS = args.max_laps
     MAX_STEPS = CHANGE_CONTEXT_EVERY * MAX_LAPS
-
+    RAD_COEFF = np.pi / 12
+    
     configure_isaac_sim_logging()
     kaya_config = ATIBaseRobotConfig(robot_name="kaya")
     kaya_config.set_kaya_config()
@@ -157,8 +158,8 @@ if __name__ == "__main__":
     context_light = [200, 1000, 3000, 6000, 9000]
     context_agent_speed = [0.2, 0.5, 1.0, 1.5, 2.0]
     trajectory = build_default_context_trajectory(
-        light_values=context_light,
-        speed_values=[s * np.pi / 12 for s in context_agent_speed],
+        light_values=[1000, 1000, 1000, 1000, 1000],
+        speed_values=[s * RAD_COEFF for s in context_agent_speed],
         light_transition_steps=30 * 200,
         speed_transition_steps=150,
         light_hold_steps=30,
@@ -166,7 +167,7 @@ if __name__ == "__main__":
         speed_phase_offset_steps=30,
     )
     curr_light = context_light[len(context_light) // 2]
-    curr_speed = context_agent_speed[len(context_agent_speed) // 2] * np.pi / 12
+    curr_speed = context_agent_speed[len(context_agent_speed) // 2] * RAD_COEFF
 
     my_scene.control_light_intensity(curr_light)
 
