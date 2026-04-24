@@ -132,7 +132,7 @@ def build_lap_log_payload(
 
 if __name__ == "__main__":
     CHANGE_CONTEXT_EVERY = args.lap_period
-    DATA_PATH = args.data_path
+    DATA_PATH = f"{args.data_path}/experiment_{args.exp_name}_{args.reward_type}_{args.lap_period}steps_decay{args.epsilon_decay}_lr{args.learning_rate}"
     MAX_LAPS = args.max_laps
     MAX_STEPS = CHANGE_CONTEXT_EVERY * MAX_LAPS
     RAD_COEFF = np.pi / 12
