@@ -69,13 +69,18 @@ class BaseScene(metaclass=ABCMeta):
         
         if self.agent_camera_fps <= 0:
             raise ValueError(f"agent_camera_fps must be positive, got {self.agent_camera_fps}.")
-        self._camera_frame_dt = 1.0 / float(self.agent_camera_fps)
-        self._base_simulation_dt, self._sim_steps_per_camera_frame = self._compute_internal_simulation_dt(
-            physics_dt=physics_dt,
-            rendering_dt=rendering_dt,
-        )
-        self._simulation_dt = self._base_simulation_dt
-        self._internal_render_fps = 1.0 / self._simulation_dt
+        if not self.rendering_mode == "autoexposure":
+            self._camera_frame_dt = 1.0 / float(self.agent_camera_fps)
+            self._base_simulation_dt, self._sim_steps_per_camera_frame = self._compute_internal_simulation_dt(
+                physics_dt=physics_dt,
+                rendering_dt=rendering_dt,
+            )
+            self._simulation_dt = self._base_simulation_dt
+            self._internal_render_fps = 1.0 / self._simulation_dt
+        else:
+            self._simulation_dt = 1.0 / float(self.agent_camera_fps)
+            self._internal_render_fps = self.agent_camera_fps
+        
         self.world = World(
             physics_dt=self._simulation_dt,
             rendering_dt=self._simulation_dt,
