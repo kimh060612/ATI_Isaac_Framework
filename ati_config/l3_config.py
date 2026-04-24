@@ -3,8 +3,8 @@ from dataclasses import dataclass
 @dataclass(frozen=True)
 class L3MDEConfig:
     reward_type: str = "flipped"  # Options: ["flipped", "test_time_augment", "oracle"]
-    max_depth: float = 80.0
-    min_depth: float = 0.01
+    max_depth: float = 20.0
+    min_depth: float = 1e-3
     model_name: str = "depth-anything/Depth-Anything-V2-Small-hf"  # Options: "depth-anything/Depth-Anything-V2-Small-hf", "depth-anything/Depth-Anything-V2-Base-hf"
     shift_ratios: tuple[float, ...] = (-0.1, 0.1)
     zoom_factors: tuple[float, ...] = (0.8, 1.2)
