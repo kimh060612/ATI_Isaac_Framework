@@ -264,11 +264,11 @@ if __name__ == "__main__":
     trajectory = build_default_context_trajectory(
         light_values=[1000, 1000, 1000, 1000, 1000],
         speed_values=[s * RAD_COEFF for s in context_agent_speed],
-        light_transition_steps=30 * 200,
-        speed_transition_steps=150,
-        light_hold_steps=30,
-        speed_hold_steps=15,
-        speed_phase_offset_steps=30,
+        light_transition_steps=args.lap_period * 20,
+        speed_transition_steps=args.lap_period * 10,
+        light_hold_steps=args.lap_period,
+        speed_hold_steps=args.lap_period,
+        speed_phase_offset_steps=args.lap_period,
     )
     
     sensor_param_space = SensorParamSpace()
