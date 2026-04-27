@@ -77,7 +77,7 @@ class ATIDepthScene(BaseScene):
         ## Too frequent sensor control causes stale data issues in Isaac Sim, so we only send control commands when there is an actual change in parameters.
         curr_params = self.get_sensor_control_params(sensor_name="agent_camera")
         if curr_params.get("iso", None) != control_parameters["iso"] or \
-            curr_params.get("shutter_time", None) != control_parameters["exposure"]:
+            curr_params.get("shutter_time", None) != control_parameters["shutter_time"]:
             controller = self.sensor_controllers[sensor_name]
             controller.update_parameters(control_parameters)
         return 
