@@ -22,7 +22,7 @@ from scene import ATIDepthScene
 from ati_config import ATIBaseConfig, ATIBaseRobotConfig, L3MDEConfig
 from l3_perception_layer import L3PLayerDepthAnythingv2, set_deterministic
 from policy.rewards.rewards import reward_flipped_img, reward_test_time_augment, reward_oracle
-from policy import L2SharedLinUCBRGBCamPolicy, SensorParamSpace
+from policy import L2SharedLinUCBRGBCamPolicy, L2DisjointLinUCBRGBCamPolicy, SensorParamSpace
 import argparse
 from PIL import Image
 import traceback
@@ -98,7 +98,7 @@ if __name__ == "__main__":
     context_light = [200, 1000, 3000, 6000, 9000]  # Example light intensity values for the agent's context
     context_agent_speed = [0.2, 0.5, 1.0, 1.5, 2.0]  # Example speed values for the agent's context
     sensor_param_space = SensorParamSpace()
-    l2_policy = L2SharedLinUCBRGBCamPolicy(
+    l2_policy = L2DisjointLinUCBRGBCamPolicy(
         sensor_names="agent_camera",
         sensor_config=sensor_param_space,
         reward_function=select_reward_function(args.reward_type), # reward_flipped_img or reward_test_time_augment or reward_oracle
