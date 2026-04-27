@@ -284,7 +284,7 @@ if __name__ == "__main__":
             h, w = rgb_image.shape[:2]
             mask = make_center_weight_mask(h, w, center_ratio=0.6)   
             next_exposure, next_gain, info = l2_ae_policy.update(
-                rgb_image=rgb_image,
+                image=rgb_image,
                 current_exposure=curr_exposure,
                 current_gain=curr_gain,
                 mask=mask,
