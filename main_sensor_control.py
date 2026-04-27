@@ -98,7 +98,8 @@ if __name__ == "__main__":
     ## L2 Policy and Reward Layer Setup
     set_deterministic(RANDOM_SEED)
     context_light = [200, 1000, 3000, 6000, 9000]  # Example light intensity values for the agent's context
-    context_agent_speed = [0.2, 0.5, 1.0, 1.5, 2.0]  # Example speed values for the agent's context
+    context_agent_speed = [1.5, 1.5, 2.0, 2.0, 2.0]
+    # [0.2, 0.5, 1.0, 1.5, 2.0]  # Example speed values for the agent's context
     trajectory = build_default_context_trajectory(
         light_values=[1000, 1000, 1000, 1000, 1000],
         speed_values=[s * RAD_COEFF for s in context_agent_speed],
