@@ -265,11 +265,13 @@ if __name__ == "__main__":
             log_performance_history.append(metric_info)
 
             if (step + 1) % CHANGE_CONTEXT_EVERY == 0 and step > 0:
+                # **get_eval_averages(log_context_history, key_category="context"),
                 wandb_run.log(
                     {
                         "context/light_intensity": curr_light,
                         "context/agent_speed": curr_speed,
-                        **get_eval_averages(log_context_history, key_category="context"),
+                        "context/iso_idx": curr_iso_idx,
+                        "context/exposure_idx": curr_exposure_idx,
                         **get_eval_averages(log_reward_history, key_category="reward"),
                         **get_eval_averages(log_performance_history, key_category="performance"),
                     }, 
