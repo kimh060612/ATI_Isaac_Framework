@@ -128,8 +128,8 @@ if __name__ == "__main__":
     
     curr_exposure_idx = len(sensor_param_space.exposure_values) // 2
     curr_iso_idx = len(sensor_param_space.iso_values) // 2
-    curr_light = context_light[len(context_light) // 2]
-    curr_speed = context_agent_speed[len(context_agent_speed) // 2] * np.pi / 12
+    # curr_light = context_light[len(context_light) // 2]
+    # curr_speed = context_agent_speed[len(context_agent_speed) // 2] * np.pi / 12
     ## Initial Sensor Control
     my_scene.control_light_intensity(curr_light) # Set initial light intensity
     my_scene.sensor_control(
