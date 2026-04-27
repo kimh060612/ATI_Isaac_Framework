@@ -101,7 +101,7 @@ class L2SharedLinUCBRGBCamPolicy(BaseCMABPolicy):
     
     def joint_feature(self, context: np.ndarray, action: Tuple[int, int]) -> np.ndarray:
         """
-        z = [1, w, log_light, e_norm, iso_norm, delta_e, delta_i]
+        z = [1, w, log_light, delta_e, delta_i]
         """
         de, di = action
         z = np.concatenate(

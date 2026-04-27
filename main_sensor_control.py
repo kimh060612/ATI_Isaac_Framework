@@ -288,7 +288,9 @@ if __name__ == "__main__":
                         "tie_break_random": False,
                     },
                     observations={
-                        "reward_info_override": log_reward_history[-CHANGE_CONTEXT_EVERY:], # Use rewards from the most recent lap for policy update
+                        "reward_info_override": get_avg_aggregation(
+                            log_reward_history[-CHANGE_CONTEXT_EVERY:]
+                        ), # Use rewards from the most recent lap for policy update
                     } # Use rewards from the most recent lap for policy update
                 )
                 if DEBUG: print("[DEBUG]Policy Step Reward Result:", result["reward_info"])
