@@ -3,6 +3,16 @@ from policy.SensorParams import SensorParamSpace
 from policy.BasePolicy import BaseCMABPolicy
 import numpy as np
 
+
+def _resolve_reward_info(policy: BaseCMABPolicy, observations: dict) -> dict:
+    reward_info_override = observations.get("reward_info_override") if isinstance(observations, dict) else None
+    if isinstance(reward_info_override, dict):
+        return dict(reward_info_override)
+    if isinstance(observations, dict) and "reward" in observations:
+        return dict(observations)
+    return policy.reward_function(**observations)
+
+
 class L2SharedLinUCBRGBCamPolicy(BaseCMABPolicy):
     """
     Shared Linear UCB policy for RGB camera control. Controlling only Exposure time and ISO with discrete actions.
@@ -35,6 +45,7 @@ class L2SharedLinUCBRGBCamPolicy(BaseCMABPolicy):
             lambda_reg, 
             random_seed
         )
+        self.pending_update = None
     
     # ------------------------------------------------------------------
     # Basic helpers
@@ -166,6 +177,9 @@ class L2SharedLinUCBRGBCamPolicy(BaseCMABPolicy):
     ):
         self.A += np.outer(z, z)
         self.b += reward * z
+        return {
+            "reward": float(reward),
+        }
     
     def transition(
         self,
@@ -190,9 +204,20 @@ class L2SharedLinUCBRGBCamPolicy(BaseCMABPolicy):
         context_information: dict,
         observations: Dict[str, Union[np.ndarray, List[np.ndarray], float, str]],
     ) -> Dict[str, Union[float, int, Tuple[int, int]]]:
+        r_t = _resolve_reward_info(self, observations)
+
+        update_info = None
+        skip_update = bool(context_information.get("skip_update", False))
+        if (not skip_update) and self.pending_update is not None:
+            update_info = self.update_parameters(
+                self.pending_update["z"],
+                float(r_t["reward"]),
+            )
+            update_info["action"] = self.pending_update["action"]
+
         sel = self.select_action(
             context_information=context_information, 
-            tie_break_random=True, 
+            tie_break_random=bool(context_information.get("tie_break_random", True)),
         ) 
         
         action = sel["chosen_action"]
@@ -205,8 +230,11 @@ class L2SharedLinUCBRGBCamPolicy(BaseCMABPolicy):
         next_exposure_value = self.cfg.exposure_values[next_e_idx]
         next_iso_value = self.cfg.iso_values[next_i_idx]
 
-        r_t = self.reward_function(**observations)
-        self.update_parameters(z, r_t["reward"])
+        if not skip_update:
+            self.pending_update = {
+                "z": z.copy(),
+                "action": action,
+            }
 
         record = {
             "angular_velocity": context_information["angular_velocity"],
@@ -221,7 +249,8 @@ class L2SharedLinUCBRGBCamPolicy(BaseCMABPolicy):
             "chosen_score": sel["chosen_score"],
             "chosen_mean": sel["chosen_mean"],
             "chosen_bonus": sel["chosen_bonus"],
-            "reward_info": r_t
+            "reward_info": r_t,
+            "update_info": update_info,
         }
         self.history.append(record)
         return record
@@ -263,6 +292,7 @@ class L2DisjointLinUCBRGBCamPolicy(BaseCMABPolicy):
             lambda_reg,
             random_seed
         )
+        self.pending_update = None
 
     # ------------------------------------------------------------------
     # Basic helpers
@@ -418,6 +448,11 @@ class L2DisjointLinUCBRGBCamPolicy(BaseCMABPolicy):
         action_idx = self._action_index(action)
         self.A[action_idx] += np.outer(z, z)
         self.b[action_idx] += reward * z
+        return {
+            "action": action,
+            "action_idx": action_idx,
+            "reward": float(reward),
+        }
 
     def transition(
         self,
@@ -442,9 +477,20 @@ class L2DisjointLinUCBRGBCamPolicy(BaseCMABPolicy):
         context_information: dict,
         observations: Dict[str, Union[np.ndarray, List[np.ndarray], float, str]],
     ) -> Dict[str, Union[float, int, Tuple[int, int]]]:
+        r_t = _resolve_reward_info(self, observations)
+
+        update_info = None
+        skip_update = bool(context_information.get("skip_update", False))
+        if (not skip_update) and self.pending_update is not None:
+            update_info = self.update_parameters(
+                self.pending_update["z"],
+                float(r_t["reward"]),
+                self.pending_update["action"],
+            )
+
         sel = self.select_action(
             context_information=context_information,
-            tie_break_random=True,
+            tie_break_random=bool(context_information.get("tie_break_random", True)),
         )
 
         action = sel["chosen_action"]
@@ -457,8 +503,11 @@ class L2DisjointLinUCBRGBCamPolicy(BaseCMABPolicy):
         next_exposure_value = self.cfg.exposure_values[next_e_idx]
         next_iso_value = self.cfg.iso_values[next_i_idx]
 
-        r_t = self.reward_function(**observations)
-        self.update_parameters(z, r_t["reward"], action)
+        if not skip_update:
+            self.pending_update = {
+                "z": z.copy(),
+                "action": action,
+            }
 
         record = {
             "angular_velocity": context_information["angular_velocity"],
@@ -473,7 +522,8 @@ class L2DisjointLinUCBRGBCamPolicy(BaseCMABPolicy):
             "chosen_score": sel["chosen_score"],
             "chosen_mean": sel["chosen_mean"],
             "chosen_bonus": sel["chosen_bonus"],
-            "reward_info": r_t
+            "reward_info": r_t,
+            "update_info": update_info,
         }
         self.history.append(record)
         return record

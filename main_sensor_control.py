@@ -50,7 +50,7 @@ def initialize_wandb(context_len, max_laps, max_steps, exp_name=None):
         project="ati_sensor_control_prototype",
         name=exp_name,
         config={
-            "policy_type": "L2SharedLinUCBRGBCamPolicy",
+            "policy_type": "L2DisjointLinUCBRGBCamPolicy",
             "turn_per_lap": context_len,
             "max_laps": max_laps,
             "max_steps": max_steps,
@@ -284,9 +284,12 @@ if __name__ == "__main__":
                         "light_intensity": curr_light,
                         "angular_velocity": curr_speed,
                         "iso_idx": curr_iso_idx,
-                        "exposure_idx": curr_exposure_idx
+                        "exposure_idx": curr_exposure_idx,
+                        "tie_break_random": False,
                     },
-                    observations=get_avg_aggregation(log_reward_history[-CHANGE_CONTEXT_EVERY:]), # Use rewards from the most recent lap for policy update
+                    observations={
+                        "reward_info_override": log_reward_history[-CHANGE_CONTEXT_EVERY:], # Use rewards from the most recent lap for policy update
+                    } # Use rewards from the most recent lap for policy update
                 )
                 if DEBUG: print("[DEBUG]Policy Step Reward Result:", result["reward_info"])
                 curr_exposure_idx = result["next_exposure_idx"]
