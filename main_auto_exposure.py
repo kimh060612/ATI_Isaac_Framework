@@ -146,6 +146,7 @@ if __name__ == "__main__":
     MAX_LAPS = args.max_laps
     MAX_STEPS = CHANGE_CONTEXT_EVERY * MAX_LAPS
     RAD_COEFF = np.pi / 12
+    ISO_BASE = 100.0
     
     configure_isaac_sim_logging()
     kaya_config = ATIBaseRobotConfig(robot_name="kaya")
@@ -192,12 +193,12 @@ if __name__ == "__main__":
         high_percentile=95,
         min_exposure=0.001,
         max_exposure=0.016,
-        smoothing=0.3,
-        max_ev_step=0.2,
+        smoothing=0.4,
+        max_ev_step=1.0,
     )
     curr_cam_param = my_scene.get_sensor_control_params(sensor_name="agent_camera")
     curr_exposure = curr_cam_param.get("exposure", 0.008)
-    curr_gain = curr_cam_param.get("iso", 400)
+    curr_gain = curr_cam_param.get("iso", 400) / ISO_BASE
     
     l3_mde_config = L3MDEConfig(
         reward_type=args.reward_type,
@@ -221,6 +222,7 @@ if __name__ == "__main__":
         "bbox": [],
         "pred_depth": [],
     }
+    log_param_history = []
     log_reward_history = []
     log_performance_history = []
     wandb_run = initialize_wandb(
@@ -278,20 +280,25 @@ if __name__ == "__main__":
 
             log_reward_history.append(reward_info)
             log_performance_history.append(metric_info)
+            log_param_history.append({
+                "exposure": curr_exposure,
+                "gain": curr_gain * ISO_BASE,
+            })
             if DEBUG:
                 print("[DEBUG] AutoExposure Reward Result:", reward_info)
 
             h, w = rgb_image.shape[:2]
-            mask = make_center_weight_mask(h, w, center_ratio=0.6)   
+            mask = make_center_weight_mask(h, w, center_ratio=0.8)   
             next_exposure, next_gain, info = l2_ae_policy.update(
                 image=rgb_image,
                 current_exposure=curr_exposure,
                 current_gain=curr_gain,
                 mask=mask,
             )
+            print(f"[DEBUG] AutoExposure Policy Output - Next Exposure: {next_exposure:.6f}, Next Gain (ISO): {next_gain:.2f}, Info: ", info)
             my_scene.sensor_control(
                 control_parameters={
-                    "iso": next_gain,
+                    "iso": next_gain * ISO_BASE,
                     "shutter_time": next_exposure,
                 }
             )
