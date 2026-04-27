@@ -191,9 +191,9 @@ if __name__ == "__main__":
         low_percentile=5,
         high_percentile=95,
         min_exposure=0.001,
-        max_exposure=0.03,
-        smoothing=0.25,
-        max_ev_step=0.5,
+        max_exposure=0.016,
+        smoothing=0.3,
+        max_ev_step=0.2,
     )
     curr_cam_param = my_scene.get_sensor_control_params(sensor_name="agent_camera")
     curr_exposure = curr_cam_param.get("exposure", 0.008)
