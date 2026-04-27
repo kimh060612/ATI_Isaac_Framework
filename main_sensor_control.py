@@ -68,6 +68,54 @@ def select_reward_function(reward_type: str):
     else:
         raise ValueError(f"Invalid reward_type: {reward_type}. Must be one of ['flipped', 'test_time_augment', 'oracle']")
 
+def build_observation_info(
+    reward_type: str, 
+    rgb_image: np.ndarray, 
+    pred_depths, 
+    metric_info: dict = None
+) -> dict:
+    if reward_type == "flipped":
+        return {
+            "original_rgb": np.array(rgb_image),
+            "depth_original": pred_depths[0],
+            "depth_flipped": pred_depths[1],
+            "image_weight": 0.1,
+            "depth_weight": 0.9,
+        }
+    elif reward_type == "test_time_augment":
+        return {
+            "rgb": np.array(rgb_image),
+            "inverse_depths": pred_depths,
+            "uncertainty_reduction": "mean",
+            "image_weight": 0.1,
+            "depth_weight": 0.9,
+        }
+    elif reward_type == "oracle":
+        return {
+            "original_rgb": np.array(rgb_image),
+            "abs_rel_error": metric_info["abs_rel"],
+            "delta_1": metric_info["a1"],
+            "image_weight": 0.1,
+            "depth_weight": 0.9,
+        }
+    else:
+        raise ValueError(f"Invalid reward_type: {reward_type}. Must be one of ['flipped', 'test_time_augment', 'oracle']")
+
+def get_avg_aggregation(reward_obs: list[dict]) -> dict:
+    if not reward_obs:
+        return {
+            "reward": 0.0,
+            "image_reward": 0.0,
+            "depth_reward": 0.0,
+            "uncertainty": 0.0,
+        }
+    return {
+        key: float(np.mean([
+            metric[key] for metric in reward_obs
+        ])) 
+        for key in reward_obs[0].keys()
+    }
+
 if __name__ == "__main__":
     # Which directory name will be cool and awesome?
     ## Plz recommend some fun, cool, sexy directory names...
@@ -98,7 +146,7 @@ if __name__ == "__main__":
     ## L2 Policy and Reward Layer Setup
     set_deterministic(RANDOM_SEED)
     context_light = [200, 1000, 3000, 6000, 9000]  # Example light intensity values for the agent's context
-    context_agent_speed = [1.5, 1.5, 2.0, 2.0, 2.0]
+    context_agent_speed = [1.5, 2.0, 1.5, 2.0, 1.5]
     # [0.2, 0.5, 1.0, 1.5, 2.0]  # Example speed values for the agent's context
     trajectory = build_default_context_trajectory(
         light_values=[1000, 1000, 1000, 1000, 1000],
@@ -206,65 +254,15 @@ if __name__ == "__main__":
             syn_data_cache["pred_depth"].append(pred_depths if isinstance(pred_depths, np.ndarray) else pred_depths[0])
             if DEBUG: print(f"Depth Prediction Metrics: {metric_info}")
             
-            if l3_mde_config.reward_type == "flipped":
-                if not np.any(pred_depths[0]):
-                    if DEBUG: print("[Fatal Error] Predicted depth is empty or all zeros.")
-                    raise ValueError("[Fatal Error] Predicted depth is empty or all zeros.")    
-                observation_info = {
-                    "original_rgb": np.array(rgb_image),
-                    "depth_original": pred_depths[0],
-                    "depth_flipped": pred_depths[1],
-                    "image_weight": 0.1,
-                    "depth_weight": 0.9,
-                }
-            elif l3_mde_config.reward_type == "test_time_augment":
-                observation_info = {
-                    "rgb": np.array(rgb_image),
-                    "inverse_depths": pred_depths,
-                    "uncertainty_reduction": "mean",
-                    "image_weight": 0.1,
-                    "depth_weight": 0.9,
-                }
-            elif l3_mde_config.reward_type == "oracle":
-                observation_info = {
-                    "original_rgb": np.array(rgb_image),
-                    "abs_rel_error": metric_info["abs_rel"],
-                    "delta_1": metric_info["a1"],
-                    "image_weight": 0.1,
-                    "depth_weight": 0.9,
-                }
-            
-            result = l2_policy.step(
-                context_information={
-                    "light_intensity": curr_light,
-                    "angular_velocity": curr_speed,
-                    "iso_idx": curr_iso_idx,
-                    "exposure_idx": curr_exposure_idx
-                },
-                observations=observation_info
+            observation_info = build_observation_info(
+                reward_type=l3_mde_config.reward_type,
+                rgb_image=rgb_image,
+                pred_depths=pred_depths,
+                metric_info=metric_info
             )
-            if DEBUG: print("[DEBUG]Policy Step Reward Result:", result["reward_info"])
-            curr_exposure_idx = result["next_exposure_idx"]
-            curr_iso_idx = result["next_iso_idx"]
-            log_reward_history.append(result["reward_info"])
+            reward_info = l2_policy.reward_function(**observation_info)
+            log_reward_history.append(reward_info)
             log_performance_history.append(metric_info)
-            log_context_history.append({
-                "iso_idx": curr_iso_idx,
-                "exposure_idx": curr_exposure_idx
-            })
-            
-            if DEBUG: print("[DEBUG] Sensor Control Action Taken - Exposure Index:", curr_exposure_idx, "ISO Index:", curr_iso_idx)
-            # If selected action does not make any changes, we can skip sending redundant control commands to the simulator.
-            ## Too frequent sensor control causes stale data issues in Isaac Sim, so we only send control commands when there is an actual change in parameters.
-            current_control_params = my_scene.get_sensor_control_params(sensor_name="agent_camera")
-            if current_control_params.get("iso", None) != sensor_param_space.iso_values[curr_iso_idx] or \
-                current_control_params.get("shutter_time", None) != sensor_param_space.exposure_values[curr_exposure_idx]:
-                    my_scene.sensor_control(
-                        control_parameters={
-                            "iso": sensor_param_space.iso_values[curr_iso_idx],
-                            "shutter_time": sensor_param_space.exposure_values[curr_exposure_idx],
-                        }
-                    )
 
             if (step + 1) % CHANGE_CONTEXT_EVERY == 0 and step > 0:
                 wandb_run.log(
@@ -278,6 +276,38 @@ if __name__ == "__main__":
                     step=lap_idx,
                     commit=True
                 )
+                
+                result = l2_policy.step(
+                    context_information={
+                        "light_intensity": curr_light,
+                        "angular_velocity": curr_speed,
+                        "iso_idx": curr_iso_idx,
+                        "exposure_idx": curr_exposure_idx
+                    },
+                    observations=get_avg_aggregation(log_reward_history[-CHANGE_CONTEXT_EVERY:]), # Use rewards from the most recent lap for policy update
+                )
+                if DEBUG: print("[DEBUG]Policy Step Reward Result:", result["reward_info"])
+                curr_exposure_idx = result["next_exposure_idx"]
+                curr_iso_idx = result["next_iso_idx"]
+                # log_reward_history.append(result["reward_info"])
+                # log_performance_history.append(metric_info)
+                log_context_history.append({
+                    "iso_idx": curr_iso_idx,
+                    "exposure_idx": curr_exposure_idx
+                })
+                
+                if DEBUG: print("[DEBUG] Sensor Control Action Taken - Exposure Index:", curr_exposure_idx, "ISO Index:", curr_iso_idx)
+                # If selected action does not make any changes, we can skip sending redundant control commands to the simulator.
+                ## Too frequent sensor control causes stale data issues in Isaac Sim, so we only send control commands when there is an actual change in parameters.
+                current_control_params = my_scene.get_sensor_control_params(sensor_name="agent_camera")
+                if current_control_params.get("iso", None) != sensor_param_space.iso_values[curr_iso_idx] or \
+                    current_control_params.get("shutter_time", None) != sensor_param_space.exposure_values[curr_exposure_idx]:
+                        my_scene.sensor_control(
+                            control_parameters={
+                                "iso": sensor_param_space.iso_values[curr_iso_idx],
+                                "shutter_time": sensor_param_space.exposure_values[curr_exposure_idx],
+                            }
+                        )
                 
                 save_synthetic_data(DATA_PATH, syn_data_cache, lap_idx)
                 # "More smooth and Moderately changing the context for the agent to adapt to new conditions 
