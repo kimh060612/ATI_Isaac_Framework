@@ -22,7 +22,7 @@ from ati_utils.log_utils import configure_isaac_sim_logging, save_synthetic_data
 from robot_control import build_default_context_trajectory
 from scene import ATIDepthScene
 from ati_config import ATIBaseConfig, ATIBaseRobotConfig, L3MDEConfig
-from policy import HighlightProtectedHistogramAE, HistogramAEExposureGain, RealSenseStyleAE, ROI, SensorParams
+from policy import RealSenseStyleAE, BaslerStyleAE, ROI, AutoFunctionAOI, SensorParams, HighlightProtectedHistogramAE
 from l3_perception_layer import L3PLayerDepthAnythingv2, set_deterministic
 from policy.rewards.rewards import reward_flipped_img, reward_test_time_augment, reward_oracle
 
@@ -39,6 +39,7 @@ parser.add_argument("--reward_type", type=str, default="oracle", choices=["flipp
 parser.add_argument("--data_path", type=str, default="/issac-sim/dataset/experiment_mde_prototype/kaya_autoexposure_eval", help="Directory path to save synthetic data and logs")
 parser.add_argument("--max_laps", type=int, default=600, help="Maximum number of laps (context changes) to run in the simulation")
 parser.add_argument("--lap_period", type=int, default=30, help="Number of steps per lap (context change period)")
+parser.add_argument("--ae_type", type=str, default="realsense", choices=["histogram", "realsense", "basler"], help="Type of auto-exposure to use for the baseline policy")
 args = parser.parse_args()
 
 RANDOM_SEED = 42
@@ -62,22 +63,30 @@ def initialize_wandb(context_len, max_laps, max_steps, exp_name=None):
         },
     )
 
-def make_center_weight_mask(h, w, center_ratio=0.6):
-    mask = np.zeros((h, w), dtype=np.uint8)
-    ch = int(h * center_ratio)
-    cw = int(w * center_ratio)
-    y0 = (h - ch) // 2
-    x0 = (w - cw) // 2
-    mask[y0:y0 + ch, x0:x0 + cw] = 1
-    return mask
-
-def make_center_ros(h, w):
-    return ROI(
-        x0=int(w * 0.25),
-        y0=int(h * 0.25),
-        x1=int(w * 0.75),
-        y1=int(h * 0.75),
-    )
+def make_center_ros(h, w, center_ratio=0.6):
+    if args.ae_type == "realsense":
+        return ROI(
+            x0=int(w * 0.2),
+            y0=int(h * 0.2),
+            x1=int(w * 0.8),
+            y1=int(h * 0.8),
+        )
+    elif args.ae_type == "basler":
+        return AutoFunctionAOI(
+            x0=int(w * 0.25),
+            y0=int(h * 0.25),
+            x1=int(w * 0.75),
+            y1=int(h * 0.75),
+            weight=1.0
+        )
+    else:
+        mask = np.zeros((h, w), dtype=np.uint8)
+        ch = int(h * center_ratio)
+        cw = int(w * center_ratio)
+        y0 = (h - ch) // 2
+        x0 = (w - cw) // 2
+        mask[y0:y0 + ch, x0:x0 + cw] = 1
+        return mask
 
 def select_reward_function(reward_type: str):
     if reward_type == "flipped":
@@ -135,6 +144,7 @@ def build_lap_log_payload(
     curr_speed: float,
     log_reward_history: list[dict],
     log_performance_history: list[dict],
+    log_param_history: list[dict] | None = None,
 ) -> dict:
     payload = {
         "context/light_intensity": curr_light,
@@ -143,13 +153,22 @@ def build_lap_log_payload(
         "baseline/valid_steps": len(log_reward_history),
         **average_history(log_reward_history, key_category="reward"),
         **average_history(log_performance_history, key_category="performance"),
+        **average_history(log_param_history, key_category="context")
     }
     return payload
 
+def map_value_to_index(exposure, iso):
+    # This function can be used to discretize the continuous exposure and ISO values into indices for logging or analysis purposes.
+    # For example, you can define bins for exposure and ISO and return the corresponding bin indices.
+    exposure_bins = [0.001, 0.002, 0.004, 0.008, 0.016]  # Example bins for exposure time
+    iso_bins = [100, 200, 400, 800, 1600]  # Example bins for ISO
+    exposure_index = np.digitize(exposure, exposure_bins) - 1
+    iso_index = np.digitize(iso, iso_bins) - 1
+    return exposure_index, iso_index
 
 if __name__ == "__main__":
     CHANGE_CONTEXT_EVERY = args.lap_period
-    DATA_PATH = f"{args.data_path}/experiment_ae_{args.exp_name}_{args.reward_type}"
+    DATA_PATH = f"{args.data_path}/experiment_ae_{args.exp_name}_{args.reward_type}_{args.ae_type}"
     MAX_LAPS = args.max_laps
     MAX_STEPS = CHANGE_CONTEXT_EVERY * MAX_LAPS
     RAD_COEFF = np.pi / 12
@@ -194,16 +213,38 @@ if __name__ == "__main__":
     }
     my_scene.control_light_intensity(curr_light)
     
-    l2_ae_policy = RealSenseStyleAE(
-        setpoint=0.45,
-        min_exposure=0.001,
-        max_exposure=0.016,
-        min_gain=1.0,
-        max_gain=8.0,
-        exposure_priority=True,
-        smoothing=0.25,
-        max_ev_step=0.5,
-    )
+    if args.ae_type == "histogram":
+        l2_ae_policy = HighlightProtectedHistogramAE(
+            target=0.45,
+            min_exposure=0.001,
+            max_exposure=0.016,
+            min_gain=1.0,
+            max_gain=8.0,
+            smoothing=0.4,
+            max_ev_step=0.5,
+        )
+    elif args.ae_type == "basler":
+        l2_ae_policy = BaslerStyleAE(
+            target=0.45,
+            min_exposure=0.001,
+            max_exposure=0.016,
+            min_gain=1.0,
+            max_gain=8.0,
+            exposure_priority=False,
+            smoothing=0.4,
+            max_ev_step=0.5,
+        )
+    else:
+        l2_ae_policy = RealSenseStyleAE(
+            setpoint=0.45,
+            min_exposure=0.001,
+            max_exposure=0.016,
+            min_gain=1.0,
+            max_gain=8.0,
+            exposure_priority=True,
+            smoothing=0.25,
+            max_ev_step=0.5,
+        )
     
     curr_cam_param = my_scene.get_sensor_control_params(sensor_name="agent_camera")
     curr_exposure = curr_cam_param.get("exposure", 0.008)
@@ -289,9 +330,10 @@ if __name__ == "__main__":
 
             log_reward_history.append(reward_info)
             log_performance_history.append(metric_info)
+            cur_exp_idx, curr_iso_idx = map_value_to_index(curr_exposure, curr_gain * ISO_BASE) 
             log_param_history.append({
-                "exposure": curr_exposure,
-                "gain": curr_gain * ISO_BASE,
+                "exposure": cur_exp_idx,
+                "gain": curr_iso_idx,
             })
             if DEBUG:
                 print("[DEBUG] AutoExposure Reward Result:", reward_info)
@@ -322,6 +364,7 @@ if __name__ == "__main__":
                         curr_speed=context["angular_velocity"],
                         log_reward_history=log_reward_history,
                         log_performance_history=log_performance_history,
+                        log_param_history=log_param_history,
                     ),
                     step=lap_idx,
                     commit=True,
@@ -340,6 +383,7 @@ if __name__ == "__main__":
                 }
                 log_reward_history = []
                 log_performance_history = []
+                log_param_history = []
                 lap_idx += 1
 
                 if VERBOSE:
@@ -366,6 +410,7 @@ if __name__ == "__main__":
                     curr_speed=context["angular_velocity"],
                     log_reward_history=log_reward_history,
                     log_performance_history=log_performance_history,
+                    log_param_history=log_param_history,
                 ),
                 step=lap_idx,
                 commit=True,

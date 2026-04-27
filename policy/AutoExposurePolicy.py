@@ -1,5 +1,19 @@
 import cv2
 import numpy as np
+from dataclasses import dataclass
+from typing import Optional, List, Tuple, Dict
+
+@dataclass
+class ROI:
+    """
+    ROI coordinates in pixel units.
+    x0, y0: top-left
+    x1, y1: bottom-right, exclusive
+    """
+    x0: int
+    y0: int
+    x1: int
+    y1: int
 
 
 class HistogramAutoExposure:
@@ -207,17 +221,19 @@ class HighlightProtectedHistogramAE(HistogramAEExposureGain):
         self.max_saturation_ratio = max_saturation_ratio
         self.highlight_penalty_strength = highlight_penalty_strength
 
-    def update(self, image, current_exposure, current_gain, mask=None):
-        y = self.hist_ae.rgb_to_luminance(image)
+    def update(self, frame_bgr, current_exposure, current_gain, roi: ROI=None):
+        y = self.hist_ae.rgb_to_luminance(frame_bgr)
 
-        if mask is not None:
-            yy = y[mask > 0]
+        if roi is not None:
+            mask = np.zeros_like(y, dtype=bool)
+            mask[roi.y0:roi.y1, roi.x0:roi.x1] = True
+            yy = y[roi.y0:roi.y1, roi.x0:roi.x1].reshape(-1)
         else:
             yy = y.reshape(-1)
 
         saturation_ratio = np.mean(yy >= self.saturation_threshold)
 
-        measured = self.hist_ae.measure_luminance(image, mask=mask)
+        measured = self.hist_ae.measure_luminance(frame_bgr, mask=mask if roi is not None else None)
 
         raw_ratio = self.target / max(measured, self.eps)
 
@@ -261,25 +277,6 @@ class HighlightProtectedHistogramAE(HistogramAEExposureGain):
         }
 
         return float(next_exposure), float(next_gain), debug
-    
-import cv2
-import numpy as np
-from dataclasses import dataclass
-from typing import Optional, Tuple, Dict
-
-
-@dataclass
-class ROI:
-    """
-    ROI coordinates in pixel units.
-    x0, y0: top-left
-    x1, y1: bottom-right, exclusive
-    """
-    x0: int
-    y0: int
-    x1: int
-    y1: int
-
 
 class RealSenseStyleAE:
     """
@@ -504,6 +501,276 @@ class RealSenseStyleAE:
             "ev_step": ev_step,
             "current_total": float(current_total),
             "next_total": float(next_total),
+            "next_exposure": next_exposure,
+            "next_gain": next_gain,
+        }
+
+        return next_exposure, next_gain, debug
+
+
+@dataclass
+class AutoFunctionAOI:
+    x0: int
+    y0: int
+    x1: int
+    y1: int
+    weight: float = 1.0
+
+
+class BaslerStyleAE:
+    """
+    Basler-like Auto Function AOI / Target Brightness AE.
+
+    Approximation of Basler's documented behavior:
+      - measure average gray value in Auto Function AOI(s)
+      - adjust exposure time within limits until target brightness is reached
+      - optionally balance exposure and gain using an Auto Function Profile-like mode
+    """
+
+    def __init__(
+        self,
+        target_brightness: float = 0.45,
+        exposure_lower: float = 0.001,
+        exposure_upper: float = 0.016,
+        gain_lower: float = 1.0,
+        gain_upper: float = 8.0,
+        profile: str = "minimize_gain",
+        smoothing: float = 0.25,
+        max_ev_step: float = 0.5,
+        eps: float = 1e-6,
+    ):
+        """
+        Args:
+            target_brightness:
+                Target average gray value in [0, 1].
+
+            exposure_lower, exposure_upper:
+                Exposure time limits in seconds.
+
+            gain_lower, gain_upper:
+                Gain limits as linear multipliers.
+
+            profile:
+                "minimize_gain":
+                    Exposure first, gain second. Good for low noise.
+
+                "minimize_exposure":
+                    Gain first, exposure second. Good for low motion blur.
+
+                "balanced":
+                    Split correction between exposure and gain.
+
+            smoothing:
+                Temporal smoothing factor.
+
+            max_ev_step:
+                Maximum correction per frame in EV.
+
+            eps:
+                Numerical stability.
+        """
+        valid_profiles = {"minimize_gain", "minimize_exposure", "balanced"}
+        if profile not in valid_profiles:
+            raise ValueError(f"profile must be one of {valid_profiles}")
+
+        self.target_brightness = float(target_brightness)
+        self.exposure_lower = float(exposure_lower)
+        self.exposure_upper = float(exposure_upper)
+        self.gain_lower = float(gain_lower)
+        self.gain_upper = float(gain_upper)
+        self.profile = profile
+        self.smoothing = float(smoothing)
+        self.max_ev_step = float(max_ev_step)
+        self.eps = float(eps)
+
+    @staticmethod
+    def to_gray_bgr(frame_bgr: np.ndarray) -> np.ndarray:
+        """
+        Convert image to gray in [0, 1].
+        """
+        if frame_bgr.ndim == 2:
+            gray = frame_bgr
+        else:
+            gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
+
+        if gray.dtype == np.uint8:
+            gray = gray.astype(np.float32) / 255.0
+        elif gray.dtype == np.uint16:
+            gray = gray.astype(np.float32) / 65535.0
+        else:
+            gray = gray.astype(np.float32)
+            if gray.max() > 1.5:
+                gray = gray / 255.0
+
+        return np.clip(gray, 0.0, 1.0)
+
+    @staticmethod
+    def _crop(gray: np.ndarray, aoi: AutoFunctionAOI) -> np.ndarray:
+        h, w = gray.shape[:2]
+
+        x0 = int(np.clip(aoi.x0, 0, w))
+        x1 = int(np.clip(aoi.x1, 0, w))
+        y0 = int(np.clip(aoi.y0, 0, h))
+        y1 = int(np.clip(aoi.y1, 0, h))
+
+        if x1 <= x0 or y1 <= y0:
+            return gray.reshape(-1)
+
+        return gray[y0:y1, x0:x1].reshape(-1)
+
+    def measure_aoi_brightness(
+        self,
+        frame_bgr: np.ndarray,
+        aois: Optional[List[AutoFunctionAOI]] = None,
+    ) -> float:
+        gray = self.to_gray_bgr(frame_bgr)
+
+        if not aois:
+            return float(np.mean(gray))
+
+        weighted_sum = 0.0
+        weight_total = 0.0
+
+        for aoi in aois:
+            values = self._crop(gray, aoi)
+            if values.size == 0:
+                continue
+
+            mean_value = float(np.mean(values))
+            weight = max(float(aoi.weight), 0.0)
+
+            weighted_sum += weight * mean_value
+            weight_total += weight
+
+        if weight_total <= 0.0:
+            return float(np.mean(gray))
+
+        return float(weighted_sum / weight_total)
+
+    def _get_correction_ratio(self, measured: float) -> Tuple[float, float, float]:
+        raw_ratio = self.target_brightness / max(measured, self.eps)
+
+        ev_step = np.log2(max(raw_ratio, self.eps))
+        ev_step = float(np.clip(ev_step, -self.max_ev_step, self.max_ev_step))
+
+        limited_ratio = float(2.0 ** ev_step)
+
+        return float(raw_ratio), limited_ratio, ev_step
+
+    def _smooth(self, current: float, desired: float) -> float:
+        log_current = np.log(max(current, self.eps))
+        log_desired = np.log(max(desired, self.eps))
+        log_next = (1.0 - self.smoothing) * log_current + self.smoothing * log_desired
+        return float(np.exp(log_next))
+
+    def _apply_profile(
+        self,
+        desired_total: float,
+        current_exposure: float,
+        current_gain: float,
+    ) -> Tuple[float, float]:
+        """
+        Split desired total brightness into exposure and gain.
+        """
+
+        desired_total = max(desired_total, self.eps)
+
+        if self.profile == "minimize_gain":
+            # Exposure first, gain second.
+            next_exposure = np.clip(
+                desired_total / self.gain_lower,
+                self.exposure_lower,
+                self.exposure_upper,
+            )
+            next_gain = np.clip(
+                desired_total / next_exposure,
+                self.gain_lower,
+                self.gain_upper,
+            )
+
+        elif self.profile == "minimize_exposure":
+            # Gain first, exposure second.
+            next_gain = np.clip(
+                desired_total / self.exposure_lower,
+                self.gain_lower,
+                self.gain_upper,
+            )
+            next_exposure = np.clip(
+                desired_total / next_gain,
+                self.exposure_lower,
+                self.exposure_upper,
+            )
+
+        elif self.profile == "balanced":
+            # Split total multiplier across exposure and gain in log domain.
+            # This is not necessarily Basler's exact internal formula,
+            # but it captures an Auto Function Profile-like balanced behavior.
+            current_total = max(current_exposure * current_gain, self.eps)
+            correction = desired_total / current_total
+
+            exposure_ratio = np.sqrt(correction)
+            gain_ratio = np.sqrt(correction)
+
+            next_exposure = np.clip(
+                current_exposure * exposure_ratio,
+                self.exposure_lower,
+                self.exposure_upper,
+            )
+            next_gain = np.clip(
+                current_gain * gain_ratio,
+                self.gain_lower,
+                self.gain_upper,
+            )
+
+            # If clipping prevented reaching desired_total, compensate with remaining channel.
+            actual_total = next_exposure * next_gain
+            residual = desired_total / max(actual_total, self.eps)
+
+            next_exposure = np.clip(
+                next_exposure * np.sqrt(residual),
+                self.exposure_lower,
+                self.exposure_upper,
+            )
+            next_gain = np.clip(
+                desired_total / max(next_exposure, self.eps),
+                self.gain_lower,
+                self.gain_upper,
+            )
+
+        else:
+            raise RuntimeError("Invalid profile")
+
+        return float(next_exposure), float(next_gain)
+
+    def update(
+        self,
+        frame_bgr: np.ndarray,
+        current_exposure: float,
+        current_gain: float,
+        aois: Optional[List[AutoFunctionAOI]] = None,
+    ) -> Tuple[float, float, Dict[str, float]]:
+        measured = self.measure_aoi_brightness(frame_bgr, aois)
+
+        raw_ratio, limited_ratio, ev_step = self._get_correction_ratio(measured)
+
+        current_total = max(current_exposure, self.eps) * max(current_gain, self.eps)
+        desired_total_unsmoothed = current_total * limited_ratio
+        desired_total = self._smooth(current_total, desired_total_unsmoothed)
+
+        next_exposure, next_gain = self._apply_profile(
+            desired_total=desired_total,
+            current_exposure=current_exposure,
+            current_gain=current_gain,
+        )
+
+        debug = {
+            "measured_aoi_brightness": measured,
+            "target_brightness": self.target_brightness,
+            "raw_ratio": raw_ratio,
+            "limited_ratio": limited_ratio,
+            "ev_step": ev_step,
+            "current_total": float(current_total),
+            "desired_total": float(desired_total),
             "next_exposure": next_exposure,
             "next_gain": next_gain,
         }
