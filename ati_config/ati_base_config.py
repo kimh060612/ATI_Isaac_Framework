@@ -99,10 +99,10 @@ class ATIBaseConfig:
         self.agent_camera_fps = fps
     
     def set_rendering_mode(self, mode):
-        if mode not in ["realtime", "pathtracing", "autoexposure"]:
+        if mode not in ["realtime", "pathtracing"]:
             raise ValueError(
                 f"Unsupported rendering mode: {mode}. "
-                "Supported modes are 'realtime', 'pathtracing', and 'autoexposure'."
+                "Supported modes are 'realtime' and 'pathtracing'."
             )
         self.rendering_mode = mode
     

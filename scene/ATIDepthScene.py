@@ -73,8 +73,13 @@ class ATIDepthScene(BaseScene):
             raise RuntimeError("Manual sensor control is not allowed in 'autoexposure' rendering mode.")
         if sensor_name not in self.sensor_controllers:
             raise ValueError(f"Sensor '{sensor_name}' does not have a controller.")
-        controller = self.sensor_controllers[sensor_name]
-        controller.update_parameters(control_parameters)
+        # If selected action does not make any changes, we can skip sending redundant control commands to the simulator.
+        ## Too frequent sensor control causes stale data issues in Isaac Sim, so we only send control commands when there is an actual change in parameters.
+        curr_params = self.get_sensor_control_params(sensor_name="agent_camera")
+        if curr_params.get("iso", None) != control_parameters["iso"] or \
+            curr_params.get("shutter_time", None) != control_parameters["exposure"]:
+            controller = self.sensor_controllers[sensor_name]
+            controller.update_parameters(control_parameters)
         return 
     
     def robot_control(

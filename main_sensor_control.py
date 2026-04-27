@@ -288,33 +288,24 @@ if __name__ == "__main__":
                         "tie_break_random": False,
                     },
                     observations={
-                        "reward_info_override": get_avg_aggregation(
-                            log_reward_history[-CHANGE_CONTEXT_EVERY:]
-                        ), # Use rewards from the most recent lap for policy update
+                        "reward_info_override": get_avg_aggregation(log_reward_history), # Use rewards from the most recent lap for policy update
                     } # Use rewards from the most recent lap for policy update
                 )
                 if DEBUG: print("[DEBUG]Policy Step Reward Result:", result["reward_info"])
                 curr_exposure_idx = result["next_exposure_idx"]
                 curr_iso_idx = result["next_iso_idx"]
-                # log_reward_history.append(result["reward_info"])
-                # log_performance_history.append(metric_info)
                 log_context_history.append({
                     "iso_idx": curr_iso_idx,
                     "exposure_idx": curr_exposure_idx
                 })
                 
                 if DEBUG: print("[DEBUG] Sensor Control Action Taken - Exposure Index:", curr_exposure_idx, "ISO Index:", curr_iso_idx)
-                # If selected action does not make any changes, we can skip sending redundant control commands to the simulator.
-                ## Too frequent sensor control causes stale data issues in Isaac Sim, so we only send control commands when there is an actual change in parameters.
-                current_control_params = my_scene.get_sensor_control_params(sensor_name="agent_camera")
-                if current_control_params.get("iso", None) != sensor_param_space.iso_values[curr_iso_idx] or \
-                    current_control_params.get("shutter_time", None) != sensor_param_space.exposure_values[curr_exposure_idx]:
-                        my_scene.sensor_control(
-                            control_parameters={
-                                "iso": sensor_param_space.iso_values[curr_iso_idx],
-                                "shutter_time": sensor_param_space.exposure_values[curr_exposure_idx],
-                            }
-                        )
+                my_scene.sensor_control(
+                    control_parameters={
+                        "iso": sensor_param_space.iso_values[curr_iso_idx],
+                        "shutter_time": sensor_param_space.exposure_values[curr_exposure_idx],
+                    }
+                )
                 
                 save_synthetic_data(DATA_PATH, syn_data_cache, lap_idx)
                 # "More smooth and Moderately changing the context for the agent to adapt to new conditions 
@@ -329,6 +320,8 @@ if __name__ == "__main__":
                     "bbox": [],
                     "pred_depth": []
                 }
+                log_reward_history = []
+                log_performance_history = []
                 lap_idx += 1
                 if VERBOSE: 
                     print(f"Context changed at step {step+1}: Light Intensity set to {curr_light}, Agent Speed set to {curr_speed}")

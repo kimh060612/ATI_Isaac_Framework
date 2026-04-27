@@ -22,6 +22,7 @@ from ati_utils.log_utils import configure_isaac_sim_logging, save_synthetic_data
 from robot_control import build_default_context_trajectory
 from scene import ATIDepthScene
 from ati_config import ATIBaseConfig, ATIBaseRobotConfig, L3MDEConfig
+from policy import HighlightProtectedHistogramAE, HistogramAEExposureGain, SensorParams
 from l3_perception_layer import L3PLayerDepthAnythingv2, set_deterministic
 from policy.rewards.rewards import reward_flipped_img, reward_test_time_augment, reward_oracle
 
@@ -60,6 +61,15 @@ def initialize_wandb(context_len, max_laps, max_steps, exp_name=None):
             "reward_type": args.reward_type,
         },
     )
+
+def make_center_weight_mask(h, w, center_ratio=0.6):
+    mask = np.zeros((h, w), dtype=np.uint8)
+    ch = int(h * center_ratio)
+    cw = int(w * center_ratio)
+    y0 = (h - ch) // 2
+    x0 = (w - cw) // 2
+    mask[y0:y0 + ch, x0:x0 + cw] = 1
+    return mask
 
 
 def select_reward_function(reward_type: str):
@@ -144,7 +154,7 @@ if __name__ == "__main__":
         name="ati_rendering_autoexposure",
         robot_config=kaya_config,
     )
-    render_config.set_rendering_mode("autoexposure")
+    render_config.set_rendering_mode("realtime") # Auto-exposure is only supported in realtime mode in this framework
     my_scene = ATIDepthScene(
         simulation_app,
         config=render_config,
@@ -156,21 +166,39 @@ if __name__ == "__main__":
     set_deterministic(RANDOM_SEED)
     reward_function = select_reward_function(args.reward_type)
     context_light = [200, 1000, 3000, 6000, 9000]
-    context_agent_speed = [0.2, 0.5, 1.0, 1.5, 2.0]
+    context_agent_speed = [1.5, 2.0, 1.5, 2.0, 1.5]
+    # [0.2, 0.5, 1.0, 1.5, 2.0]
     trajectory = build_default_context_trajectory(
         light_values=[1000, 1000, 1000, 1000, 1000],
         speed_values=[s * RAD_COEFF for s in context_agent_speed],
-        light_transition_steps=30 * 200,
-        speed_transition_steps=150,
-        light_hold_steps=30,
-        speed_hold_steps=15,
-        speed_phase_offset_steps=30,
+        light_transition_steps=args.lap_period * 20,
+        speed_transition_steps=args.lap_period * 10,
+        light_hold_steps=args.lap_period,
+        speed_hold_steps=args.lap_period,
+        speed_phase_offset_steps=args.lap_period,
     )
-    curr_light = context_light[len(context_light) // 2]
-    curr_speed = context_agent_speed[len(context_agent_speed) // 2] * RAD_COEFF
-
+    context = trajectory.value_at(0)
+    curr_light = context["light_intensity"]
+    curr_speed = context["angular_velocity"]
+    context = {
+        "light_intensity": curr_light,
+        "angular_velocity": curr_speed,
+    }
     my_scene.control_light_intensity(curr_light)
-
+    
+    l2_ae_policy = HighlightProtectedHistogramAE(
+        target=0.45,
+        low_percentile=5,
+        high_percentile=95,
+        min_exposure=0.001,
+        max_exposure=0.03,
+        smoothing=0.25,
+        max_ev_step=0.5,
+    )
+    curr_cam_param = my_scene.get_sensor_control_params(sensor_name="agent_camera")
+    curr_exposure = curr_cam_param.get("exposure", 0.008)
+    curr_gain = curr_cam_param.get("iso", 400)
+    
     l3_mde_config = L3MDEConfig(
         reward_type=args.reward_type,
         model_name="depth-anything/Depth-Anything-V2-Small-hf",
@@ -208,8 +236,6 @@ if __name__ == "__main__":
                 print(f"Step: {step+1}/{MAX_STEPS}, Simulation Time: {my_scene.get_simulation_current_time:.4f} seconds")
 
             syn_data = my_scene.step(render=True)
-            context = trajectory.value_at(step)
-            my_scene.control_light_intensity(context["light_intensity"])
             my_scene.robot_control(
                 time=my_scene.get_simulation_current_time,
                 control_parameters={
@@ -252,9 +278,25 @@ if __name__ == "__main__":
 
             log_reward_history.append(reward_info)
             log_performance_history.append(metric_info)
-
             if DEBUG:
                 print("[DEBUG] AutoExposure Reward Result:", reward_info)
+
+            h, w = rgb_image.shape[:2]
+            mask = make_center_weight_mask(h, w, center_ratio=0.6)   
+            next_exposure, next_gain, info = l2_ae_policy.update(
+                rgb_image=rgb_image,
+                current_exposure=curr_exposure,
+                current_gain=curr_gain,
+                mask=mask,
+            )
+            my_scene.sensor_control(
+                control_parameters={
+                    "iso": next_gain,
+                    "shutter_time": next_exposure,
+                }
+            )
+            curr_exposure = next_exposure
+            curr_gain = next_gain
 
             if (step + 1) % CHANGE_CONTEXT_EVERY == 0 and step > 0:
                 wandb_run.log(
@@ -267,12 +309,12 @@ if __name__ == "__main__":
                     step=lap_idx,
                     commit=True,
                 )
-
-                save_synthetic_data(DATA_PATH, syn_data_cache, lap_idx)
-
-                # curr_light = context["light_intensity"]
-                # curr_speed = context["angular_velocity"]
-                # my_scene.control_light_intensity(curr_light)
+                
+                context = trajectory.value_at(lap_idx)
+                curr_light = context["light_intensity"]
+                curr_speed = context["angular_velocity"]
+                my_scene.control_light_intensity(curr_light)
+                save_synthetic_data(DATA_PATH, syn_data_cache, lap_idx)                
                 syn_data_cache = {
                     "rgb": [],
                     "depth": [],
