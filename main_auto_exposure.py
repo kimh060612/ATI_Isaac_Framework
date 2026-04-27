@@ -22,7 +22,7 @@ from ati_utils.log_utils import configure_isaac_sim_logging, save_synthetic_data
 from robot_control import build_default_context_trajectory
 from scene import ATIDepthScene
 from ati_config import ATIBaseConfig, ATIBaseRobotConfig, L3MDEConfig
-from policy import HighlightProtectedHistogramAE, HistogramAEExposureGain, SensorParams
+from policy import HighlightProtectedHistogramAE, HistogramAEExposureGain, RealSenseStyleAE, ROI, SensorParams
 from l3_perception_layer import L3PLayerDepthAnythingv2, set_deterministic
 from policy.rewards.rewards import reward_flipped_img, reward_test_time_augment, reward_oracle
 
@@ -71,6 +71,13 @@ def make_center_weight_mask(h, w, center_ratio=0.6):
     mask[y0:y0 + ch, x0:x0 + cw] = 1
     return mask
 
+def make_center_ros(h, w):
+    return ROI(
+        x0=int(w * 0.25),
+        y0=int(h * 0.25),
+        x1=int(w * 0.75),
+        y1=int(h * 0.75),
+    )
 
 def select_reward_function(reward_type: str):
     if reward_type == "flipped":
@@ -187,15 +194,17 @@ if __name__ == "__main__":
     }
     my_scene.control_light_intensity(curr_light)
     
-    l2_ae_policy = HighlightProtectedHistogramAE(
-        target=0.45,
-        low_percentile=5,
-        high_percentile=95,
+    l2_ae_policy = RealSenseStyleAE(
+        setpoint=0.45,
         min_exposure=0.001,
         max_exposure=0.016,
-        smoothing=0.4,
-        max_ev_step=1.0,
+        min_gain=1.0,
+        max_gain=8.0,
+        exposure_priority=True,
+        smoothing=0.25,
+        max_ev_step=0.5,
     )
+    
     curr_cam_param = my_scene.get_sensor_control_params(sensor_name="agent_camera")
     curr_exposure = curr_cam_param.get("exposure", 0.008)
     curr_gain = curr_cam_param.get("iso", 400) / ISO_BASE
@@ -288,12 +297,13 @@ if __name__ == "__main__":
                 print("[DEBUG] AutoExposure Reward Result:", reward_info)
 
             h, w = rgb_image.shape[:2]
-            mask = make_center_weight_mask(h, w, center_ratio=0.8)   
+            # mask = make_center_weight_mask(h, w, center_ratio=0.8)   
+            roi = make_center_ros(h, w)
             next_exposure, next_gain, info = l2_ae_policy.update(
-                image=rgb_image,
+                frame_bgr=rgb_image,
                 current_exposure=curr_exposure,
                 current_gain=curr_gain,
-                mask=mask,
+                roi=roi,
             )
             print(f"[DEBUG] AutoExposure Policy Output - Next Exposure: {next_exposure:.6f}, Next Gain (ISO): {next_gain:.2f}, Info: ", info)
             my_scene.sensor_control(
@@ -376,3 +386,14 @@ if __name__ == "__main__":
         print("[Main] Done. If process hangs, run: pkill -f 'python.sh|kit'")
 
     simulation_app.close()
+
+
+# HighlightProtectedHistogramAE(
+#         target=0.45,
+#         low_percentile=5,
+#         high_percentile=95,
+#         min_exposure=0.001,
+#         max_exposure=0.016,
+#         smoothing=0.4,
+#         max_ev_step=1.0,
+#     )

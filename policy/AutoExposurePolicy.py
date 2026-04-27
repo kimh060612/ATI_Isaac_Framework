@@ -261,3 +261,251 @@ class HighlightProtectedHistogramAE(HistogramAEExposureGain):
         }
 
         return float(next_exposure), float(next_gain), debug
+    
+import cv2
+import numpy as np
+from dataclasses import dataclass
+from typing import Optional, Tuple, Dict
+
+
+@dataclass
+class ROI:
+    """
+    ROI coordinates in pixel units.
+    x0, y0: top-left
+    x1, y1: bottom-right, exclusive
+    """
+    x0: int
+    y0: int
+    x1: int
+    y1: int
+
+
+class RealSenseStyleAE:
+    """
+    RealSense-like Auto Exposure controller.
+
+    Public RealSense docs describe AE as:
+      - average intensity inside a predefined ROI
+      - maintain that average at a predefined setpoint
+      - exposure and gain are adjusted when AE is enabled
+
+    This class implements the same control idea outside the camera SDK.
+    """
+
+    def __init__(
+        self,
+        setpoint: float = 0.45,
+        min_exposure: float = 0.001,
+        max_exposure: float = 0.016,
+        min_gain: float = 1.0,
+        max_gain: float = 8.0,
+        exposure_priority: bool = True,
+        smoothing: float = 0.25,
+        max_ev_step: float = 0.5,
+        eps: float = 1e-6,
+    ):
+        """
+        Args:
+            setpoint:
+                Target average intensity in [0, 1].
+                RealSense docs call this "setpoint".
+                0.4~0.5 is a reasonable starting range.
+
+            min_exposure, max_exposure:
+                Exposure time bounds in seconds.
+
+            min_gain, max_gain:
+                Analog/digital gain bounds.
+                Here gain is treated as linear multiplier.
+
+            exposure_priority:
+                If True, use exposure time first, then gain.
+                If False, keep exposure shorter and use gain earlier.
+
+            smoothing:
+                Temporal smoothing factor.
+                Larger value = faster AE response.
+
+            max_ev_step:
+                Maximum exposure correction per update in EV.
+                0.5 means max change is about 2^0.5 = 1.414x per frame.
+
+            eps:
+                Numerical stability.
+        """
+        self.setpoint = float(setpoint)
+        self.min_exposure = float(min_exposure)
+        self.max_exposure = float(max_exposure)
+        self.min_gain = float(min_gain)
+        self.max_gain = float(max_gain)
+        self.exposure_priority = bool(exposure_priority)
+        self.smoothing = float(smoothing)
+        self.max_ev_step = float(max_ev_step)
+        self.eps = float(eps)
+
+    @staticmethod
+    def to_luminance_bgr(frame_bgr: np.ndarray) -> np.ndarray:
+        """
+        Convert BGR image to luminance in [0, 1].
+        OpenCV images are usually BGR.
+        """
+        if frame_bgr.dtype == np.uint8:
+            img = frame_bgr.astype(np.float32) / 255.0
+        elif frame_bgr.dtype == np.uint16:
+            img = frame_bgr.astype(np.float32) / 65535.0
+        else:
+            img = frame_bgr.astype(np.float32)
+            if img.max() > 1.5:
+                img = img / 255.0
+
+        if img.ndim == 2:
+            return np.clip(img, 0.0, 1.0)
+
+        b = img[..., 0]
+        g = img[..., 1]
+        r = img[..., 2]
+
+        # Rec.709 luma
+        y = 0.2126 * r + 0.7152 * g + 0.0722 * b
+        return np.clip(y, 0.0, 1.0)
+
+    @staticmethod
+    def crop_roi(y: np.ndarray, roi: Optional[ROI]) -> np.ndarray:
+        if roi is None:
+            return y.reshape(-1)
+
+        h, w = y.shape[:2]
+        x0 = int(np.clip(roi.x0, 0, w))
+        x1 = int(np.clip(roi.x1, 0, w))
+        y0 = int(np.clip(roi.y0, 0, h))
+        y1 = int(np.clip(roi.y1, 0, h))
+
+        if x1 <= x0 or y1 <= y0:
+            return y.reshape(-1)
+
+        return y[y0:y1, x0:x1].reshape(-1)
+
+    def measure_roi_mean(
+        self,
+        frame_bgr: np.ndarray,
+        roi: Optional[ROI] = None,
+    ) -> float:
+        y = self.to_luminance_bgr(frame_bgr)
+        values = self.crop_roi(y, roi)
+
+        if values.size == 0:
+            return self.setpoint
+
+        return float(np.mean(values))
+
+    def _limited_ratio(self, measured: float) -> Tuple[float, float, float]:
+        """
+        Returns:
+            raw_ratio, limited_ratio, ev_step
+        """
+        raw_ratio = self.setpoint / max(measured, self.eps)
+
+        ev_step = np.log2(max(raw_ratio, self.eps))
+        ev_step = float(np.clip(ev_step, -self.max_ev_step, self.max_ev_step))
+
+        limited_ratio = float(2.0 ** ev_step)
+        return float(raw_ratio), limited_ratio, ev_step
+
+    def _smooth_total_exposure(
+        self,
+        current_total: float,
+        desired_total: float,
+    ) -> float:
+        """
+        Smooth in log-domain to avoid unstable exposure oscillation.
+        """
+        log_current = np.log(max(current_total, self.eps))
+        log_desired = np.log(max(desired_total, self.eps))
+        log_next = (1.0 - self.smoothing) * log_current + self.smoothing * log_desired
+        return float(np.exp(log_next))
+
+    def _split_exposure_gain(
+        self,
+        total: float,
+        current_exposure: float,
+        current_gain: float,
+    ) -> Tuple[float, float]:
+        """
+        Convert total brightness multiplier into exposure and gain.
+
+        exposure_priority=True:
+            Use exposure first, then gain.
+
+        exposure_priority=False:
+            Keep exposure close to current/shorter range and use gain earlier.
+            Useful when motion blur is more harmful than sensor noise.
+        """
+        total = max(total, self.eps)
+
+        if self.exposure_priority:
+            next_exposure = np.clip(
+                total / self.min_gain,
+                self.min_exposure,
+                self.max_exposure,
+            )
+            next_gain = np.clip(
+                total / next_exposure,
+                self.min_gain,
+                self.max_gain,
+            )
+        else:
+            # Try not to increase exposure too much; use gain earlier.
+            # This is a practical robotics variant for moving platforms.
+            preferred_exposure = np.clip(
+                current_exposure,
+                self.min_exposure,
+                self.max_exposure,
+            )
+            next_gain = np.clip(
+                total / preferred_exposure,
+                self.min_gain,
+                self.max_gain,
+            )
+            next_exposure = np.clip(
+                total / next_gain,
+                self.min_exposure,
+                self.max_exposure,
+            )
+
+        return float(next_exposure), float(next_gain)
+
+    def update(
+        self,
+        frame_bgr: np.ndarray,
+        current_exposure: float,
+        current_gain: float,
+        roi: Optional[ROI] = None,
+    ) -> Tuple[float, float, Dict[str, float]]:
+        measured = self.measure_roi_mean(frame_bgr, roi)
+
+        raw_ratio, limited_ratio, ev_step = self._limited_ratio(measured)
+
+        current_total = max(current_exposure, self.eps) * max(current_gain, self.eps)
+        desired_total = current_total * limited_ratio
+        next_total = self._smooth_total_exposure(current_total, desired_total)
+
+        next_exposure, next_gain = self._split_exposure_gain(
+            total=next_total,
+            current_exposure=current_exposure,
+            current_gain=current_gain,
+        )
+
+        debug = {
+            "measured_roi_mean": measured,
+            "setpoint": self.setpoint,
+            "raw_ratio": raw_ratio,
+            "limited_ratio": limited_ratio,
+            "ev_step": ev_step,
+            "current_total": float(current_total),
+            "next_total": float(next_total),
+            "next_exposure": next_exposure,
+            "next_gain": next_gain,
+        }
+
+        return next_exposure, next_gain, debug
