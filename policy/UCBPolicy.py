@@ -251,8 +251,8 @@ class L2DisjointLinUCBRGBCamPolicy(BaseCMABPolicy):
         self.action_to_index = {action: idx for idx, action in enumerate(all_actions)}
 
         # Feature dimension:
-        # [1, w, log_light, e_norm, iso_norm]
-        dim_context = 5
+        # [1, w, log_light]
+        dim_context = 3
 
         super().__init__(
             sensor_names,
@@ -294,7 +294,7 @@ class L2DisjointLinUCBRGBCamPolicy(BaseCMABPolicy):
         # iso_idx: int,
     ) -> np.ndarray:
         """
-        x = [1, w, log(light), e_idx_norm, iso_idx_norm]
+        x = [1, w, log(light)]
         """
         if light_intensity <= 0:
             raise ValueError("light_intensity must be > 0 because log(light) is used.")
