@@ -18,6 +18,7 @@ simulation_app = SimulationApp(launch_config=CONFIG)
 
 # Scene Building
 from ati_utils.log_utils import configure_isaac_sim_logging, save_synthetic_data, get_eval_averages
+from robot_control import build_default_context_trajectory
 from scene import ATIDepthScene
 from ati_config import ATIBaseConfig, ATIBaseRobotConfig, L3MDEConfig
 from l3_perception_layer import L3PLayerDepthAnythingv2, set_deterministic
@@ -71,9 +72,10 @@ if __name__ == "__main__":
     # Which directory name will be cool and awesome?
     ## Plz recommend some fun, cool, sexy directory names...
     CHANGE_CONTEXT_EVERY = args.lap_period
-    DATA_PATH = args.data_path
+    DATA_PATH = f"{args.data_path}/experiment_{args.exp_name}_{args.reward_type}_{args.lap_period}steps"
     MAX_LAPS = args.max_laps
     MAX_STEPS = CHANGE_CONTEXT_EVERY * MAX_LAPS
+    RAD_COEFF = np.pi / 12
     
     # Isaac Sim Scene Setup
     configure_isaac_sim_logging() # Set Isaac Sim logging level to Error to avoid cluttering
@@ -97,6 +99,16 @@ if __name__ == "__main__":
     set_deterministic(RANDOM_SEED)
     context_light = [200, 1000, 3000, 6000, 9000]  # Example light intensity values for the agent's context
     context_agent_speed = [0.2, 0.5, 1.0, 1.5, 2.0]  # Example speed values for the agent's context
+    trajectory = build_default_context_trajectory(
+        light_values=[1000, 1000, 1000, 1000, 1000],
+        speed_values=[s * RAD_COEFF for s in context_agent_speed],
+        light_transition_steps=args.lap_period * 20,
+        speed_transition_steps=args.lap_period * 10,
+        light_hold_steps=args.lap_period,
+        speed_hold_steps=args.lap_period,
+        speed_phase_offset_steps=args.lap_period,
+    )
+    
     sensor_param_space = SensorParamSpace()
     l2_policy = L2DisjointLinUCBRGBCamPolicy(
         sensor_names="agent_camera",
@@ -105,6 +117,14 @@ if __name__ == "__main__":
         alpha=1.0,
         random_seed=RANDOM_SEED,
     )
+    context = trajectory.value_at(0)
+    curr_light = context["light_intensity"]
+    curr_speed = context["angular_velocity"]
+    context = {
+        "light_intensity": curr_light,
+        "angular_velocity": curr_speed,
+    }
+    
     curr_exposure_idx = len(sensor_param_space.exposure_values) // 2
     curr_iso_idx = len(sensor_param_space.iso_values) // 2
     curr_light = context_light[len(context_light) // 2]
@@ -259,9 +279,11 @@ if __name__ == "__main__":
                 )
                 
                 save_synthetic_data(DATA_PATH, syn_data_cache, lap_idx)
-                # "More smooth and Moderately changing the context for the agent to adapt to new conditions while avoiding drastic changes that could destabilize learning."
-                curr_light = float(rng.choice(context_light))
-                curr_speed = float(rng.choice(context_agent_speed)) * np.pi / 12
+                # "More smooth and Moderately changing the context for the agent to adapt to new conditions 
+                # while avoiding drastic changes that could destabilize learning."
+                context = trajectory.value_at(lap_idx)
+                curr_light = context["light_intensity"]
+                curr_speed = context["angular_velocity"]
                 my_scene.control_light_intensity(curr_light)
                 syn_data_cache = {
                     "rgb": [],
