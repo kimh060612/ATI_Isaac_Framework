@@ -747,9 +747,9 @@ class BaslerStyleAE:
         frame_bgr: np.ndarray,
         current_exposure: float,
         current_gain: float,
-        aois: Optional[List[AutoFunctionAOI]] = None,
+        roi: Optional[List[AutoFunctionAOI]] = None,
     ) -> Tuple[float, float, Dict[str, float]]:
-        measured = self.measure_aoi_brightness(frame_bgr, aois)
+        measured = self.measure_aoi_brightness(frame_bgr, roi)
 
         raw_ratio, limited_ratio, ev_step = self._get_correction_ratio(measured)
 
