@@ -225,13 +225,13 @@ if __name__ == "__main__":
         )
     elif args.ae_type == "basler":
         l2_ae_policy = BaslerStyleAE(
-            target=0.45,
-            min_exposure=0.001,
-            max_exposure=0.016,
-            min_gain=1.0,
-            max_gain=8.0,
-            exposure_priority=False,
-            smoothing=0.4,
+            target_brightness=0.45,
+            exposure_lower=0.001,
+            exposure_upper=0.016,
+            gain_lower=1.0,
+            gain_upper=8.0,
+            profile="minimize_exposure",
+            smoothing=0.25,
             max_ev_step=0.5,
         )
     else:
