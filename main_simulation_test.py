@@ -29,7 +29,7 @@ import os
 
 TIME_REPUTATION = 1000
 ONE_LAP_PERIOD = 20
-DATA_SAVE_PATH = "/issac-sim/dataset/experiment_isaac_rendering/exp_kaya_rt_custom_reward" # /home/ati/ATI_research/dataset/test_isaacsim_sdg/data/
+DATA_SAVE_PATH = "/home/ati/ATI_research/dataset/experiment_ati_mde/exp_kaya_imu" # /home/ati/ATI_research/dataset/test_isaacsim_sdg/data/
 
 def save_status(lap_idx, iso_idx, st_idx, speed_idx, light_idx, d_time=None):
     with open(os.path.join(DATA_SAVE_PATH, "status_log.txt"), "a") as f:
