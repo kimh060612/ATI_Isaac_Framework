@@ -79,16 +79,16 @@ def build_observation_info(
             "original_rgb": np.array(rgb_image),
             "depth_original": pred_depths[0],
             "depth_flipped": pred_depths[1],
-            "image_weight": 0.1,
-            "depth_weight": 0.9,
+            "image_weight": 0.0,
+            "depth_weight": 1.0,
         }
     elif reward_type == "test_time_augment":
         return {
             "rgb": np.array(rgb_image),
             "inverse_depths": pred_depths,
             "uncertainty_reduction": "mean",
-            "image_weight": 0.1,
-            "depth_weight": 0.9,
+            "image_weight": 0.0,
+            "depth_weight": 1.0,
         }
     elif reward_type == "oracle":
         return {
