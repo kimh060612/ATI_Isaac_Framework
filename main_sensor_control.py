@@ -191,11 +191,11 @@ if __name__ == "__main__":
     l3_mde_config = L3MDEConfig(
         reward_type=args.reward_type, # "flipped" or "test_time_augment" or "oracle"
         model_name="depth-anything/Depth-Anything-V2-Small-hf",
-        shift_ratios=None,
-        zoom_factors=None,
+        shift_ratios=[],
+        zoom_factors=[],
         gaussian_noise_stds=(0.01, 0.02, 0.05),
         brightness_factors=(0.8, 0.9),
-        color_jitter_strengths=None,
+        color_jitter_strengths=[],
         disable_hflip=False,
         prediction_mode="identity",
     )
