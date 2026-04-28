@@ -62,5 +62,5 @@ class ATIBaseRobotConfig:
         self.change_agent_camera_resolution((640, 480))
         self.kaya_wheels = ["axle_0_joint", "axle_1_joint", "axle_2_joint"]
         self.agent_perspective_cam_prim_path = perspective_cam_prim_path
-        self.agent_imu_prim_path = "/World/Agent/base_link/Imu_Sensor"
+        self.agent_imu_prim_path = "/World/Agent/base_link/realsense_d455/RSD455/Imu_Sensor"
         self.__check_robot()
