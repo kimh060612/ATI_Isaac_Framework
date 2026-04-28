@@ -72,13 +72,13 @@ def make_center_ros(h, w, center_ratio=0.6):
             y1=int(h * 0.8),
         )
     elif args.ae_type == "basler":
-        return AutoFunctionAOI(
+        return [AutoFunctionAOI(
             x0=int(w * 0.25),
             y0=int(h * 0.25),
             x1=int(w * 0.75),
             y1=int(h * 0.75),
             weight=1.0
-        )
+        )]
     else:
         mask = np.zeros((h, w), dtype=np.uint8)
         ch = int(h * center_ratio)
