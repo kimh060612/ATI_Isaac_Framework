@@ -33,7 +33,7 @@ def reward_flipped_img(
     depth_diff = np.abs(depth_original - depth_flipped)
     depth_diff = (depth_diff - np.min(depth_diff)) / (np.max(depth_diff) - np.min(depth_diff) + 1e-6)
     depth_diff = float(np.mean(depth_diff))
-    depth_confidence = float(np.exp(-depth_diff))
+    depth_confidence = float(1. / (1 + depth_diff))
     
     total_reward = image_weight * sharp_original + depth_weight * depth_confidence
     
@@ -57,7 +57,7 @@ def reward_test_time_augment(
     )
     image_reward = motion_blur_score(rgb) # compute_composite_image_quality(rgb).score
     # motion_blur_score(rgb)
-    confidence = float(np.exp(-uncertainty))
+    confidence = float(1. / (1 + uncertainty)) # Convert uncertainty to confidence (heuristic)
     total_reward = image_weight * image_reward + depth_weight * confidence
 
     return {

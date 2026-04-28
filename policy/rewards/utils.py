@@ -210,7 +210,6 @@ def compute_tta_uncertainty(
 
     stacked = np.stack([np.asarray(depth, dtype=np.float32) for depth in inverse_depths], axis=0)
     variance_map = np.var(stacked, axis=0)
-    variance_map = min_max_normalize(variance_map)
     
     if reduction == "mean":
         uncertainty = float(np.mean(variance_map))

@@ -29,6 +29,7 @@ from isaacsim.core.utils.viewports import set_camera_view
 from isaacsim.robot.wheeled_robots.robots import WheeledRobot
 from isaacsim.core.prims import SingleArticulation
 from isaacsim.sensors.camera import Camera
+from isaacsim.sensors.physics import IMUSensor
 
 from ati_config import ATIBaseConfig, DEBUG
 from sensor_control import BaseSensorController, ShutterExposureSensorController
@@ -288,6 +289,7 @@ class BaseScene(metaclass=ABCMeta):
             - Empty Dictionary: (No rendered output. The sensor did not capture during the timestep, or the rendering is disabled.)
         """
         rendered_data = self.__render_time_control(render=render)
+        rendered_data["imu_sensor"] = self.agent_imu.get_current_frame()
         
         if self.world.is_stopped() and not self.__reset_needed:
             self.__reset_needed = True
@@ -337,6 +339,8 @@ class BaseScene(metaclass=ABCMeta):
         if not data:
             return False
         if data.get("rgb", None) is None or data["rgb"].size == 0:
+            return False
+        if data.get("imu_sensor", None) is None:
             return False
         return True
     
@@ -676,6 +680,17 @@ class BaseScene(metaclass=ABCMeta):
             self.agent_camera_prim_path, 
             self.assets_root_path + self.agent_camera_usd_path,
             self.config.require_external_camera
+        )
+        
+        self.agent_imu = IMUSensor(
+            prim_path=self.robot_config.agent_imu_prim_path,
+            name="agent_imu",
+            frequency=int(1. / self._simulation_dt),
+            translation=np.array([0, 0, 0]),
+            orientation=np.array([1, 0, 0, 0]),
+            linear_acceleration_filter_size = 10,
+            angular_velocity_filter_size = 10,
+            orientation_filter_size = 10,
         )
         
         # --- Create overhead camera ---

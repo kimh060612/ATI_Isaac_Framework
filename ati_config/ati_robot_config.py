@@ -52,6 +52,7 @@ class ATIBaseRobotConfig:
         self.agent_prim_path = "/World/Agent"
         self.agent_camera_prim_path = "/World/Agent/depth_link/limo_camera"
         self.agent_perspective_cam_prim_path = "/World/Agent/depth_link/limo_camera"
+        self.agent_imu_prim_path = "/World/Agent/base_link/Imu_Sensor"
         self.require_external_camera = False
         self.custom_robot = True
         self.__check_robot()
@@ -61,4 +62,5 @@ class ATIBaseRobotConfig:
         self.change_agent_camera_resolution((640, 480))
         self.kaya_wheels = ["axle_0_joint", "axle_1_joint", "axle_2_joint"]
         self.agent_perspective_cam_prim_path = perspective_cam_prim_path
+        self.agent_imu_prim_path = "/World/Agent/base_link/Imu_Sensor"
         self.__check_robot()
