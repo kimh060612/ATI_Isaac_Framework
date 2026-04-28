@@ -95,8 +95,8 @@ def build_observation_info(
             "original_rgb": np.array(rgb_image),
             "abs_rel_error": metric_info["abs_rel"],
             "delta_1": metric_info["a1"],
-            "image_weight": 0.1,
-            "depth_weight": 0.9,
+            "image_weight": 0.0,
+            "depth_weight": 1.0,
         }
     else:
         raise ValueError(f"Invalid reward_type: {reward_type}. Must be one of ['flipped', 'test_time_augment', 'oracle']")
@@ -191,11 +191,11 @@ if __name__ == "__main__":
     l3_mde_config = L3MDEConfig(
         reward_type=args.reward_type, # "flipped" or "test_time_augment" or "oracle"
         model_name="depth-anything/Depth-Anything-V2-Small-hf",
-        shift_ratios=(0.02, 0.05, 0.1),
-        zoom_factors=(0.9, 1.1),
-        gaussian_noise_stds=(0.01, 0.02),
-        brightness_factors=(0.8, 1.2),
-        color_jitter_strengths=(0.05, 0.1),
+        shift_ratios=None,
+        zoom_factors=None,
+        gaussian_noise_stds=(0.01, 0.02, 0.05),
+        brightness_factors=(0.8, 0.9),
+        color_jitter_strengths=None,
         disable_hflip=False,
         prediction_mode="identity",
     )
