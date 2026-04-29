@@ -258,6 +258,7 @@ if __name__ == "__main__":
     )
     
     sensor_param_space = SensorParamSpace()
+    prev_context = [0.2, 0.5, 1.0, 1.5, 2.0]
     l2_policy = L2SharedEGreedyRGBCamPolicy(
         sensor_names="agent_camera",
         sensor_config=sensor_param_space,
@@ -268,7 +269,7 @@ if __name__ == "__main__":
         learning_rate=args.learning_rate,
         motion_thresholds=[ 
             ((s + e) / 2) * RAD_COEFF
-            for (s, e) in zip(context_agent_speed[:-1], context_agent_speed[1:])
+            for (s, e) in zip(prev_context[:-1], prev_context[1:])
         ],
         light_thresholds=[
             ((s + e) / 2) for (s, e) in zip(context_light[:-1], context_light[1:])
