@@ -335,15 +335,14 @@ if __name__ == "__main__":
                     "angular_velocity": float(context["angular_velocity"]),
                 }
             )
-            my_scene.control_light_intensity(context["light_intensity"])
+            syn_data = my_scene.step(render=True)
             my_scene.robot_control(
                 time=my_scene.get_simulation_current_time,
                 control_parameters={
                     "angular_velocity": context["angular_velocity"],
                 },
             )
-            syn_data = my_scene.step(render=True)
-
+            
             rgb_image: np.ndarray = syn_data.get("rgb", None)
             gt_depth: np.ndarray = syn_data.get(my_scene.get_anno("depth"), None)
             bbox_data: np.ndarray = syn_data.get(my_scene.get_anno("2d_bounding_box"), None)
@@ -491,9 +490,10 @@ if __name__ == "__main__":
 
                 save_synthetic_data(DATA_PATH, syn_data_cache, lap_idx)
 
-                # curr_light = float(rng.choice(context_light))
-                # curr_speed = float(rng.choice(context_agent_speed)) * np.pi / 12
-                # my_scene.control_light_intensity(curr_light)
+                context = trajectory.value_at(lap_idx)
+                curr_light = context["light_intensity"]
+                curr_speed = context["angular_velocity"]
+                my_scene.control_light_intensity(curr_light)
                 syn_data_cache = {
                     "rgb": [],
                     "depth": [],
@@ -508,7 +508,6 @@ if __name__ == "__main__":
                 log_policy_update_history = []
                 log_state_history = []
                 lap_idx += 1
-                context = trajectory.value_at(step)
                 
                 if VERBOSE:
                     warmup_msg = "warmup" if is_warmup_lap else "cmab"
