@@ -306,8 +306,8 @@ if __name__ == "__main__":
     syn_data_cache = {
         "rgb": [],
         "depth": [],
-        # "bbox": [],
-        "pred_depth": [],
+        "bbox": [],
+        # "pred_depth": [],
     }
     lap_context_samples = []
     log_context_history = []
@@ -357,20 +357,21 @@ if __name__ == "__main__":
 
             syn_data_cache["rgb"].append(rgb_image)
             syn_data_cache["depth"].append(gt_depth)
+            syn_data_cache["bbox"].append(bbox_data)
             
             correct, conf, pred_label = c_model.predict_image(rgb_image, gt_bbox=bbox_data)
             if DEBUG:
                 print(f"[DEBUG] L3 Classification Prediction: {pred_label}, Confidence: {conf:.4f}, Correct in GT BBox: {correct:.4f}")
 
-            observation_info = build_observation_info(
-                reward_type=args.reward_type,
-                rgb_image=rgb_image,
-                confidence=conf,
-                correct=correct,
-            )
-            reward_info = l2_policy.reward_function(**observation_info)
-            log_reward_history.append(reward_info)
             if not correct == -1:
+                observation_info = build_observation_info(
+                    reward_type=args.reward_type,
+                    rgb_image=rgb_image,
+                    confidence=conf,
+                    correct=correct,
+                )
+                reward_info = l2_policy.reward_function(**observation_info)
+                log_reward_history.append(reward_info)
                 log_performance_history.append({"accuracy": float(correct), "confidence": float(conf)})
 
             if (step + 1) % CHANGE_CONTEXT_EVERY == 0 and step > 0:
@@ -494,8 +495,8 @@ if __name__ == "__main__":
                 syn_data_cache = {
                     "rgb": [],
                     "depth": [],
-                    # "bbox": [],
-                    "pred_depth": [],
+                    "bbox": [],
+                    # "pred_depth": [],
                 }
                 lap_context_samples = []
                 log_context_history = []
