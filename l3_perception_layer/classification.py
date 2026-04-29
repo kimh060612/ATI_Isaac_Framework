@@ -58,7 +58,7 @@ class L3PLayerClassificiation:
         scene_label_list = []
         for i in range(N):
             semantic_id, _, _, _, _, _ = gt_bbox['data'][i]
-            _labels = idToLabels[semantic_id]['class'].split(",")
+            _labels = idToLabels[str(semantic_id)]['class'].split(",")
             scene_label_list.extend(_labels)
         count = 0
         for target in self.imagenetlabel_to_isaacsim_label.keys():
