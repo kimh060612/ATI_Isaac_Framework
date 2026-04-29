@@ -359,6 +359,7 @@ if __name__ == "__main__":
             syn_data_cache["depth"].append(gt_depth)
             syn_data_cache["bbox"].append(bbox_data)
             
+            print(bbox_data['info']['idToLabels'])
             correct, conf, pred_label = c_model.predict_image(rgb_image, gt_bbox=bbox_data)
             if DEBUG:
                 print(f"[DEBUG] L3 Classification Prediction: {pred_label}, Confidence: {conf:.4f}, Correct in GT BBox: {correct:.4f}")
