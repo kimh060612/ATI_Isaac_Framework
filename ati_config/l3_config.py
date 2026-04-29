@@ -22,3 +22,8 @@ class L3MDEConfig:
             "depth-anything/Depth-Anything-V2-Base-hf"
         ]:
             raise ValueError(f"Invalid model_name: {self.model_name}. Must be one of ['depth-anything/Depth-Anything-V2-Small-hf', 'depth-anything/Depth-Anything-V2-Base-hf']")
+        
+@dataclass(frozen=True)
+class L3ClassificationConfig:
+    model_name: str = "mobilenetv2_100"  # Currently only support mobilenetv2_100, can be easily extended to other timm models in the future.
+    imagenetlabel_to_isaacsim_label: dict[str, list[str]] = None

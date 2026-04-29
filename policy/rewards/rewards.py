@@ -66,3 +66,36 @@ def reward_test_time_augment(
         "depth_reward": float(confidence),
         "uncertainty": float(uncertainty),
     }
+
+def reward_classification_confidence(
+    rgb_image: np.ndarray,
+    confidence: float,
+    image_weight: float = 0.1,
+    task_weight: float = 0.9,
+) -> dict:
+    image_reward = motion_blur_score(rgb_image)
+    total_reward = image_weight * image_reward + task_weight * confidence
+
+    return {
+        "reward": float(total_reward),
+        "image_reward": float(image_reward),
+        "task_reward": float(confidence),
+        "uncertainty": float(1 - confidence),  # Higher confidence means lower uncertainty
+    }
+    
+def reward_classification_oracle(
+    rgb_image: np.ndarray,
+    correct: float,
+    image_weight: float = 0.1,
+    task_weight: float = 0.9,
+) -> dict:
+    image_reward = motion_blur_score(rgb_image)
+    task_reward = correct
+    total_reward = image_weight * image_reward + task_weight * task_reward
+
+    return {
+        "reward": float(total_reward),
+        "image_reward": float(image_reward),
+        "task_reward": float(task_reward),
+        "uncertainty": float(1 - correct),  # Higher correctness means lower uncertainty
+    }   
