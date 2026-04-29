@@ -67,8 +67,9 @@ class L3PLayerClassificiation:
             if target in scene_label_list: count += 1
         if count == 0:
             return -1.0
-        if predicted_label in scene_label_list:
-            return 1.0
+        for _, v in self.imagenetlabel_to_isaacsim_label.items():
+            if predicted_label in v:            
+               return 1.0
         else:   
             return 0.0 
         
