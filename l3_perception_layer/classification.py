@@ -58,13 +58,15 @@ class L3PLayerClassificiation:
         scene_label_list = []
         for i in range(N):
             semantic_id, _, _, _, _, _ = gt_bbox['data'][i]
+            if not 'class' in idToLabels[str(semantic_id)].keys():
+                return -1.0
             _labels = idToLabels[str(semantic_id)]['class'].split(",")
             scene_label_list.extend(_labels)
         count = 0
         for target in self.imagenetlabel_to_isaacsim_label.keys():
             if target in scene_label_list: count += 1
         if count == 0:
-            return -1
+            return -1.0
         if predicted_label in scene_label_list:
             return 1.0
         else:   
