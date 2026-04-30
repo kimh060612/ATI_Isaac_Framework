@@ -22,7 +22,7 @@ class ATIBaseConfig:
     min_motion_blur_subsamples: int = 2  # Minimum samples used for any non-zero shutter interval
     
     
-    scene_usd: str = f"{os.getcwd()}/custom_usd/ATI_MDE_Scene_003/World0.usd"
+    scene_usd: str = f"{os.getcwd()}/custom_usd/ATI_MDE_Scene_004/World0.usd"
     # "/Isaac/Environments/Simple_Room/simple_room.usd"
     # "/Isaac/Environments/Simple_Warehouse/warehouse.usd"
     # "/Isaac/Environments/Grid/gridroom_curved.usd"
