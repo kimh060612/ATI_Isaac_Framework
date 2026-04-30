@@ -79,24 +79,24 @@ def build_observation_info(
             "original_rgb": np.array(rgb_image),
             "depth_original": pred_depths[0],
             "depth_flipped": pred_depths[1],
-            "image_weight": 0.1,
-            "depth_weight": 0.9,
+            "image_weight": 0.0,
+            "depth_weight": 1.0,
         }
     elif reward_type == "test_time_augment":
         return {
             "rgb": np.array(rgb_image),
             "inverse_depths": pred_depths,
             "uncertainty_reduction": "mean",
-            "image_weight": 0.1,
-            "depth_weight": 0.9,
+            "image_weight": 0.0,
+            "depth_weight": 1.0,
         }
     elif reward_type == "oracle":
         return {
             "original_rgb": np.array(rgb_image),
             "abs_rel_error": metric_info["abs_rel"],
             "delta_1": metric_info["a1"],
-            "image_weight": 0.1,
-            "depth_weight": 0.9,
+            "image_weight": 0.0,
+            "depth_weight": 1.0,
         }
     else:
         raise ValueError(f"Invalid reward_type: {reward_type}. Must be one of ['flipped', 'test_time_augment', 'oracle']")
