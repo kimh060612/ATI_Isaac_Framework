@@ -136,7 +136,7 @@ class L3PLayerDepthAnythingv2:
     ):
         gt = np.asarray(gt).astype(np.float64)
         pred = np.asarray(pred).astype(np.float64)
-
+        gt_inv = 1. / (gt + eps)
         if gt.shape != pred.shape:
             raise ValueError(f"Shape mismatch: gt {gt.shape}, pred {pred.shape}")
 
@@ -148,25 +148,28 @@ class L3PLayerDepthAnythingv2:
             raise ValueError("No valid pixels found for evaluation.")
 
         gt_valid = gt[valid]
+        gt_inv_valid = gt_inv[valid]
         pred_valid = pred[valid]
 
         # 2) optional alignment for relative-depth prediction
         if align_mode is not None:
             if align_mode == "median":
-                scale = np.median(gt_valid) / (np.median(pred_valid) + eps)
+                scale = np.median(gt_inv_valid) / (np.median(pred_valid) + eps)
                 pred_valid = pred_valid * scale
 
             elif align_mode == "scale_shift":
                 # solve: gt ≈ s * pred + t
                 A = np.stack([pred_valid, np.ones_like(pred_valid)], axis=1)  # [N, 2]
-                x, _, _, _ = np.linalg.lstsq(A, gt_valid, rcond=None)
+                x, _, _, _ = np.linalg.lstsq(A, gt_inv_valid, rcond=None)
                 s, t = x
                 pred_valid = s * pred_valid + t
+                pred_valid = np.maximum(pred_valid, 1e-6)
 
             else:
                 raise ValueError(f"Unknown align_mode: {align_mode}")
 
         # 3) clamp after alignment
+        pred_valid = 1. / (pred_valid + 1e-8)
         pred_valid = np.clip(pred_valid, self.min_depth, self.max_depth)
         gt_valid = np.clip(gt_valid, self.min_depth, self.max_depth)
 
@@ -208,12 +211,12 @@ class L3PLayerDepthAnythingv2:
         pred_depth = pred_depth.flatten()
         gt_depth = gt_depth.flatten()
 
-        mask = np.logical_and(gt_depth > self.min_depth, gt_depth < self.max_depth)
-        pred_depth = pred_depth[mask]
-        gt_depth = gt_depth[mask]
-        gt_depth = 1 / gt_depth
+        # mask = np.logical_and(gt_depth > self.min_depth, gt_depth < self.max_depth)
+        # pred_depth = pred_depth[mask]
+        # gt_depth = gt_depth[mask]
+        # gt_depth = 1 / gt_depth
 
-        metrics = self.__compute_errors_numpy(gt_depth, pred_depth, align_mode="median")
+        metrics = self.__compute_errors_numpy(gt_depth, pred_depth, align_mode="scale_shift")
         if verbose:
             print(
                 "[MDE Result on step {:03d}] | abs_rel: {:.2f} | sq_rel {:.2f} | rmse {:.2f} | "
