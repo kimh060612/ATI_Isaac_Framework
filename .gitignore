@@ -3,6 +3,7 @@ __pycache__/*
 custom_usd/WegoLimo
 custom_usd/WegoLimo/*
 custom_usd/ati_indoor_experiment_stage/
-custom_usd/ATI_MDE_Scene_00*
+custom_usd/*
+imagenet*.txt
 wandb
 .vscode/*
