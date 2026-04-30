@@ -242,10 +242,10 @@ if __name__ == "__main__":
             if gt_depth is None or gt_depth.size == 0:
                 if VERBOSE: print("Warning: Received empty ground-truth depth image. Skipping this step.")
                 continue
-            if bbox_data is None or bbox_data["data"].size == 0:
-                print(bbox_data)
-                if VERBOSE: print("Warning: Received empty bounding box data. Skipping this step.")
-                continue
+            # if bbox_data is None or bbox_data["data"].size == 0:
+            #     print(bbox_data)
+            #     if VERBOSE: print("Warning: Received empty bounding box data. Skipping this step.")
+            #     continue
             syn_data_cache["rgb"].append(rgb_image)
             syn_data_cache["depth"].append(gt_depth)
             syn_data_cache["bbox"].append(bbox_data)
