@@ -160,8 +160,8 @@ def build_lap_log_payload(
 def map_value_to_index(exposure, iso):
     # This function can be used to discretize the continuous exposure and ISO values into indices for logging or analysis purposes.
     # For example, you can define bins for exposure and ISO and return the corresponding bin indices.
-    exposure_bins = [0.001, 0.002, 0.004, 0.008, 0.016]  # Example bins for exposure time
-    iso_bins = [100, 200, 400, 800, 1600]  # Example bins for ISO
+    exposure_bins = [0.001, 0.002, 0.004, 0.006, 0.008, 0.012, 0.016]  # Example bins for exposure time
+    iso_bins = [100, 400, 600, 800, 1200, 1600, 2400, 3200]  # Example bins for ISO
     exposure_index = np.digitize(exposure, exposure_bins) - 1
     iso_index = np.digitize(iso, iso_bins) - 1
     return exposure_index, iso_index
