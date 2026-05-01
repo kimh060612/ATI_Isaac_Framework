@@ -1,2 +1,3 @@
 from .CircularController import CircularController
 from .utils.trajectory import ContextTrajectory, PingPongTrajectory, build_default_context_trajectory
+from .utils.way_point import *
