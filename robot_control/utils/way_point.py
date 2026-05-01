@@ -133,6 +133,7 @@ class RandomPathFollower:
         bounds_margin: float = 0.15,
         boundary_turn_gain: float = 2.5,
         boundary_recovery_speed: float = 0.2,
+        boundary_spin_velocity: float = 0.8,
         max_path_length: float | None = None,
         auto_resample_on_completion: bool = True,
     ):
@@ -155,6 +156,7 @@ class RandomPathFollower:
             bounds_margin=bounds_margin,
             boundary_turn_gain=boundary_turn_gain,
             boundary_recovery_speed=boundary_recovery_speed,
+            boundary_spin_velocity=boundary_spin_velocity,
             max_path_length=max_path_length,
             angular_gain=angular_gain,
             max_angular_velocity=max_angular_velocity,
@@ -173,6 +175,7 @@ class RandomPathFollower:
         bounds_margin: float | None = None,
         boundary_turn_gain: float | None = None,
         boundary_recovery_speed: float | None = None,
+        boundary_spin_velocity: float | None = None,
         max_path_length: float | None = None,
         angular_gain: float | None = None,
         max_angular_velocity: float | None = None,
@@ -197,6 +200,8 @@ class RandomPathFollower:
             self.boundary_turn_gain = max(0.0, float(boundary_turn_gain))
         if boundary_recovery_speed is not None:
             self.boundary_recovery_speed = max(0.0, float(boundary_recovery_speed))
+        if boundary_spin_velocity is not None:
+            self.boundary_spin_velocity = max(0.0, float(boundary_spin_velocity))
         if max_path_length is not None:
             self.max_path_length = max(0.0, float(max_path_length))
         elif not hasattr(self, "max_path_length"):
@@ -338,13 +343,22 @@ class RandomPathFollower:
 
         pt_robot = np.array([current_pose.x, current_pose.y], dtype=float)
         heading = np.array([np.cos(current_pose.theta), np.sin(current_pose.theta)], dtype=float)
+        requested_linear_velocity = float(linear_velocity)
         safe_distance = self._distance_to_safe_boundary_along_heading(pt_robot, heading)
         max_safe_velocity = max(0.0, safe_distance / float(step_dt))
-        linear_velocity = min(float(linear_velocity), max_safe_velocity)
+        linear_velocity = min(requested_linear_velocity, max_safe_velocity)
 
         projected = pt_robot + heading * linear_velocity * float(step_dt)
-        if self._is_inside_safe_bounds(pt_robot) and self._is_inside_safe_bounds(projected):
-            return VelocityCommand(linear_velocity=float(linear_velocity), angular_velocity=float(angular_velocity))
+        is_guard_active = (
+            (not self._is_inside_safe_bounds(pt_robot))
+            or (not self._is_inside_safe_bounds(projected))
+            or max_safe_velocity < requested_linear_velocity
+        )
+        if not is_guard_active:
+            return VelocityCommand(
+                linear_velocity=float(linear_velocity),
+                angular_velocity=float(angular_velocity)
+            )
 
         safe_target = self._keep_inside_bounds(pt_robot)
         if np.linalg.norm(safe_target - pt_robot) < 1e-6:
@@ -358,9 +372,18 @@ class RandomPathFollower:
             angular_velocity = -self.boundary_turn_gain * d_theta
 
         angular_velocity = float(np.clip(angular_velocity, -self.max_angular_velocity, self.max_angular_velocity))
+        if abs(angular_velocity) < self.boundary_spin_velocity:
+            spin_direction = 1.0 if angular_velocity >= 0.0 else -1.0
+            angular_velocity = spin_direction * min(self.boundary_spin_velocity, self.max_angular_velocity)
         return VelocityCommand(
-            linear_velocity=float(min(linear_velocity, self.boundary_recovery_speed)),
+            linear_velocity=0.0,
             angular_velocity=angular_velocity,
+        )
+
+    def _spin_in_place(self) -> VelocityCommand:
+        return VelocityCommand(
+            linear_velocity=0.0,
+            angular_velocity=float(min(self.boundary_spin_velocity, self.max_angular_velocity)),
         )
 
     def step(
@@ -377,7 +400,7 @@ class RandomPathFollower:
             if self.auto_resample_on_completion:
                 self.set_random_target_path(current_pose)
             else:
-                return VelocityCommand(linear_velocity=0.0, angular_velocity=0.0)
+                return self._spin_in_place()
 
         _, pt_path_length, pt_seg_idx, _ = self.path_helper.find_nearest(pt_robot)
         remaining_distance = self._remaining_path_distance(pt_path_length)

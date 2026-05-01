@@ -61,7 +61,8 @@ parser.add_argument("--stop_distance_threshold", type=float, default=0.35, help=
 parser.add_argument("--path_bounds", type=float, nargs=4, default=(-1.2, 1.8, 0.0, 1.2), metavar=("X_MIN", "X_MAX", "Y_MIN", "Y_MAX"))
 parser.add_argument("--path_bounds_margin", type=float, default=0.1, help="Inset margin used for waypoint sampling and command-level bounds guarding")
 parser.add_argument("--boundary_turn_gain", type=float, default=2.5, help="Heading correction gain used when the robot approaches path bounds")
-parser.add_argument("--boundary_recovery_speed", type=float, default=0.2, help="Maximum forward speed while recovering back inside safe path bounds")
+parser.add_argument("--boundary_recovery_speed", type=float, default=0.2, help="Reserved recovery speed parameter for path-boundary control")
+parser.add_argument("--boundary_spin_velocity", type=float, default=0.8, help="In-place yaw velocity in rad/s used at path bounds or after early path completion")
 parser.add_argument("--max_lap_path_length", type=float, default=None, help="Maximum sampled path length per lap in meters; defaults to the feasible length from max_path_speed and lap_period")
 parser.add_argument("--waypoint_count", type=int, default=8)
 parser.add_argument("--warmup_laps", type=int, default=1, help="Number of initial waypoint laps to skip policy updates and logging.")
@@ -94,6 +95,7 @@ def initialize_wandb(context_len, max_laps, max_steps, max_lap_path_length=None,
             "forward_angle_threshold": args.forward_angle_threshold,
             "path_bounds": tuple(args.path_bounds),
             "path_bounds_margin": args.path_bounds_margin,
+            "boundary_spin_velocity": args.boundary_spin_velocity,
             "max_lap_path_length": max_lap_path_length,
             "max_laps": max_laps,
             "max_steps": max_steps,
@@ -271,6 +273,7 @@ if __name__ == "__main__":
         bounds_margin=args.path_bounds_margin,
         boundary_turn_gain=args.boundary_turn_gain,
         boundary_recovery_speed=args.boundary_recovery_speed,
+        boundary_spin_velocity=args.boundary_spin_velocity,
         max_path_length=max_lap_path_length,
         lookahead_distance=args.lookahead_distance,
         angular_gain=args.angular_gain,
