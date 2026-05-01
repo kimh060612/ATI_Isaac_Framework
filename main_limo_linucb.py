@@ -46,12 +46,16 @@ parser.add_argument("--exp_name", type=str, default="atil2l3_limo_random_path_de
 parser.add_argument("--reward_type", type=str, default="oracle", choices=["flipped", "test_time_augment", "oracle"])
 parser.add_argument("--data_path", type=str, default="/issac-sim/dataset/experiment_mde_prototype/limo_random_path")
 parser.add_argument("--max_laps", type=int, default=600)
-parser.add_argument("--lap_period", type=int, default=30, help="Context trajectory period in steps; waypoint completion now defines laps.")
-parser.add_argument("--path_speed", type=float, default=0.9, help="LIMO nominal forward speed in m/s")
-parser.add_argument("--turn_path_speed", type=float, default=0.3, help="Forward speed in m/s while heading error is above forward_angle_threshold")
+parser.add_argument("--lap_period", type=int, default=30, help="Number of rendered steps per fixed lap.")
+parser.add_argument("--path_speed", type=float, default=1.5, help="LIMO nominal forward speed in m/s")
+parser.add_argument("--turn_path_speed", type=float, default=0.6, help="Forward speed in m/s while heading error is above forward_angle_threshold")
+parser.add_argument("--max_path_speed", type=float, default=8.0, help="Maximum adaptive straight-path speed in m/s")
+parser.add_argument("--max_turn_path_speed", type=float, default=4.0, help="Maximum adaptive turn speed in m/s")
+parser.add_argument("--min_motion_blur_speed", type=float, default=1.5, help="Minimum straight-path speed used to encourage visible motion blur")
+parser.add_argument("--lap_speed_margin", type=float, default=1.25, help="Multiplier applied to required speed for finishing one path inside one lap")
 parser.add_argument("--lookahead_distance", type=float, default=0.8, help="Pure-pursuit lookahead distance in meters")
-parser.add_argument("--angular_gain", type=float, default=1.6, help="Heading-error proportional gain")
-parser.add_argument("--max_angular_velocity", type=float, default=1.4, help="Yaw-rate command limit in rad/s")
+parser.add_argument("--angular_gain", type=float, default=2.5, help="Heading-error proportional gain")
+parser.add_argument("--max_angular_velocity", type=float, default=3.0, help="Yaw-rate command limit in rad/s")
 parser.add_argument("--forward_angle_threshold", type=float, default=float(np.pi / 3.0), help="Heading-error threshold in radians for using full path_speed")
 parser.add_argument("--stop_distance_threshold", type=float, default=0.35, help="Distance in meters from path end that completes the current waypoint lap")
 parser.add_argument("--path_bounds", type=float, nargs=4, default=(-1.2, 1.8, 0.0, 1.8), metavar=("X_MIN", "X_MAX", "Y_MIN", "Y_MAX"))
@@ -75,13 +79,17 @@ def initialize_wandb(context_len, max_laps, max_steps, exp_name=None):
             "trajectory_type": "random_path_following",
             "turn_per_lap": context_len,
             "context_period_steps": context_len,
-            "lap_definition": "waypoint_path_completion",
+            "lap_definition": "fixed_step_path_budget",
             "warmup_laps": args.warmup_laps,
             "path_speed": args.path_speed,
             "turn_path_speed": args.turn_path_speed,
+            "max_path_speed": args.max_path_speed,
+            "max_turn_path_speed": args.max_turn_path_speed,
+            "min_motion_blur_speed": args.min_motion_blur_speed,
+            "lap_speed_margin": args.lap_speed_margin,
             "forward_angle_threshold": args.forward_angle_threshold,
             "max_laps": max_laps,
-            "estimated_max_steps": max_steps,
+            "max_steps": max_steps,
             "l3_mde_model": "Depth-Anything-V2-Small-hf",
         },
     )
@@ -168,7 +176,7 @@ def make_syn_data_cache() -> dict:
 if __name__ == "__main__":
     CHANGE_CONTEXT_EVERY = args.lap_period
     WARMUP_LAPS = max(0, int(args.warmup_laps))
-    DATA_PATH = f"{args.data_path}/experiment_{args.exp_name}_{args.reward_type}_{args.waypoint_count}waypoints"
+    DATA_PATH = f"{args.data_path}/experiment_{args.exp_name}_{args.reward_type}_{args.lap_period}steps_{args.waypoint_count}waypoints"
     MAX_LAPS = args.max_laps
     MAX_STEPS = CHANGE_CONTEXT_EVERY * MAX_LAPS
 
@@ -246,11 +254,16 @@ if __name__ == "__main__":
         waypoint_count=args.waypoint_count,
         path_speed=args.path_speed,
         turn_path_speed=args.turn_path_speed,
+        max_path_speed=args.max_path_speed,
+        max_turn_path_speed=args.max_turn_path_speed,
+        min_motion_blur_speed=args.min_motion_blur_speed,
+        lap_speed_margin=args.lap_speed_margin,
         lookahead_distance=args.lookahead_distance,
         angular_gain=args.angular_gain,
         max_angular_velocity=args.max_angular_velocity,
         forward_angle_threshold=args.forward_angle_threshold,
         stop_distance_threshold=args.stop_distance_threshold,
+        auto_resample_on_completion=False,
         rng=rng,
     )
 
@@ -272,14 +285,18 @@ if __name__ == "__main__":
         while simulation_app._app.is_running() and not simulation_app.is_exiting():
             if VERBOSE:
                 print(
-                    f"Step: {step + 1}, Lap: {lap_idx + 1}/{MAX_LAPS}, "
+                    f"Step: {step + 1}/{MAX_STEPS}, Lap: {lap_idx + 1}/{MAX_LAPS}, "
                     f"Simulation Time: {my_scene.get_simulation_current_time:.4f} seconds"
                 )
 
             pose = get_limo_pose_2d(my_scene)
-            previous_path_id = random_path_follower.path_id
-            cmd = random_path_follower.step(pose)
-            lap_completed = previous_path_id > 0 and random_path_follower.path_id != previous_path_id
+            lap_step_idx = step % CHANGE_CONTEXT_EVERY
+            remaining_lap_steps = CHANGE_CONTEXT_EVERY - lap_step_idx
+            cmd = random_path_follower.step(
+                pose,
+                remaining_steps=remaining_lap_steps,
+                step_dt=render_config.rendering_dt,
+            )
             my_scene.robot_control(
                 time=my_scene.get_simulation_current_time,
                 control_parameters={
@@ -311,8 +328,8 @@ if __name__ == "__main__":
             syn_data_cache["bbox"].append(bbox_data)
             syn_data_cache["imu"].append(imu_sensor_data)
             log_motion_history.append({
-                "linear_velocity": np.linalg.norm(imu_sensor_data["lin_acc"][:2]) if imu_sensor_data else 0.0,
-                "angular_velocity": np.linalg.norm(imu_sensor_data["ang_vel"][:2]) if imu_sensor_data else 0.0,
+                "linear_velocity": cmd.linear_velocity,
+                "angular_velocity": cmd.angular_velocity,
                 "path_id": random_path_follower.path_id,
             })
 
@@ -331,9 +348,10 @@ if __name__ == "__main__":
             log_reward_history.append(reward_info)
             log_performance_history.append(metric_info)
 
-            if lap_completed:
+            if (step + 1) % CHANGE_CONTEXT_EVERY == 0:
                 motion_summary = average_motion_history(log_motion_history)
-                motion_summary["path_id"] = float(previous_path_id)
+                random_path_follower.update_completion_status(get_limo_pose_2d(my_scene))
+                completed_path_in_lap = random_path_follower.path_completed
                 curr_motion_context = max(
                     motion_summary["linear_velocity"], 
                     motion_summary["abs_angular_velocity"]
@@ -379,6 +397,7 @@ if __name__ == "__main__":
                             "context/angular_velocity": motion_summary["angular_velocity"],
                             "context/abs_angular_velocity": motion_summary["abs_angular_velocity"],
                             "context/path_id": motion_summary["path_id"],
+                            "context/path_completed": float(completed_path_in_lap),
                             "context/iso_idx": curr_iso_idx,
                             "context/exposure_idx": curr_exposure_idx,
                             **get_eval_averages(log_reward_history, key_category="reward"),
@@ -389,7 +408,7 @@ if __name__ == "__main__":
                     )
                     save_synthetic_data(DATA_PATH, syn_data_cache, lap_idx - WARMUP_LAPS)
 
-                context = trajectory.value_at(lap_idx + 1)
+                context = trajectory.value_at(step + 1)
                 curr_light = context["light_intensity"]
                 my_scene.control_light_intensity(curr_light)
 
@@ -401,11 +420,13 @@ if __name__ == "__main__":
                 if VERBOSE:
                     lap_mode = "warmup" if is_warmup_lap else "linucb"
                     print(
-                        f"Waypoint lap {lap_idx}/{MAX_LAPS} completed at step {step + 1} ({lap_mode}). "
+                        f"Fixed-step lap {lap_idx}/{MAX_LAPS} completed at step {step + 1} ({lap_mode}). "
+                        f"Path completed: {completed_path_in_lap}. "
                         f"Light Intensity set to {curr_light}, "
                         f"LIMO avg linear speed {motion_summary['linear_velocity']:.3f}, "
                         f"avg angular speed {motion_summary['angular_velocity']:.3f}"
                     )
+                random_path_follower.set_random_target_path(get_limo_pose_2d(my_scene))
 
             if lap_idx >= MAX_LAPS:
                 print("All laps completed. Ending simulation")

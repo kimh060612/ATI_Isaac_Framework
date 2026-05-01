@@ -126,6 +126,11 @@ class RandomPathFollower:
         stop_distance_threshold: float = 0.35,
         forward_angle_threshold: float = np.pi / 3.0,
         turn_path_speed: float = 0.15,
+        max_path_speed: float = 2.0,
+        max_turn_path_speed: float = 1.0,
+        min_motion_blur_speed: float = 1.2,
+        lap_speed_margin: float = 1.25,
+        auto_resample_on_completion: bool = True,
     ):
         self.x_min, self.x_max, self.y_min, self.y_max = (float(v) for v in bounds)
         self.waypoint_count = max(2, int(waypoint_count))
@@ -134,9 +139,15 @@ class RandomPathFollower:
         self.path = None
         self.path_helper = None
         self.path_id = 0
+        self.path_completed = False
+        self.auto_resample_on_completion = bool(auto_resample_on_completion)
         self.set_motion_limits(
             path_speed=path_speed,
             turn_path_speed=turn_path_speed,
+            max_path_speed=max_path_speed,
+            max_turn_path_speed=max_turn_path_speed,
+            min_motion_blur_speed=min_motion_blur_speed,
+            lap_speed_margin=lap_speed_margin,
             angular_gain=angular_gain,
             max_angular_velocity=max_angular_velocity,
             stop_distance_threshold=stop_distance_threshold,
@@ -147,6 +158,10 @@ class RandomPathFollower:
         self,
         path_speed: float | None = None,
         turn_path_speed: float | None = None,
+        max_path_speed: float | None = None,
+        max_turn_path_speed: float | None = None,
+        min_motion_blur_speed: float | None = None,
+        lap_speed_margin: float | None = None,
         angular_gain: float | None = None,
         max_angular_velocity: float | None = None,
         stop_distance_threshold: float | None = None,
@@ -156,6 +171,14 @@ class RandomPathFollower:
             self.path_speed = max(0.0, float(path_speed))
         if turn_path_speed is not None:
             self.turn_path_speed = max(0.0, float(turn_path_speed))
+        if max_path_speed is not None:
+            self.max_path_speed = max(0.0, float(max_path_speed))
+        if max_turn_path_speed is not None:
+            self.max_turn_path_speed = max(0.0, float(max_turn_path_speed))
+        if min_motion_blur_speed is not None:
+            self.min_motion_blur_speed = max(0.0, float(min_motion_blur_speed))
+        if lap_speed_margin is not None:
+            self.lap_speed_margin = max(1.0, float(lap_speed_margin))
         if angular_gain is not None:
             self.angular_gain = float(angular_gain)
         if max_angular_velocity is not None:
@@ -184,6 +207,7 @@ class RandomPathFollower:
         self.path = self._smooth_polyline(points)
         self.path_helper = PathHelper(self.path)
         self.path_id += 1
+        self.path_completed = False
 
     def _smooth_polyline(self, points: np.ndarray, samples_per_segment: int = 8) -> np.ndarray:
         smoothed = [points[0]]
@@ -196,17 +220,56 @@ class RandomPathFollower:
                 smoothed.append(start + eased * (end - start))
         return np.asarray(smoothed, dtype=float)
 
-    def step(self, current_pose: Pose2D) -> VelocityCommand:
+    def _remaining_path_distance(self, pt_path_length: float) -> float:
+        return max(0.0, self.path_helper.get_path_length() - float(pt_path_length))
+
+    def distance_to_path_end(self, current_pose: Pose2D) -> float:
+        if self.path is None:
+            return np.inf
+        pt_robot = np.array([current_pose.x, current_pose.y], dtype=float)
+        return float(np.linalg.norm(pt_robot - self.path[-1]))
+
+    def update_completion_status(self, current_pose: Pose2D) -> bool:
+        self.path_completed = self.distance_to_path_end(current_pose) < self.stop_distance_threshold
+        return self.path_completed
+
+    def _target_linear_velocity(
+        self,
+        d_theta: float,
+        remaining_distance: float,
+        remaining_steps: int | None,
+        step_dt: float | None,
+    ) -> float:
+        full_speed = max(self.path_speed, self.min_motion_blur_speed)
+        turn_speed = self.turn_path_speed
+        if remaining_steps is not None and step_dt is not None:
+            remaining_time = max(float(remaining_steps) * float(step_dt), float(step_dt))
+            required_speed = self.lap_speed_margin * remaining_distance / remaining_time
+            full_speed = max(full_speed, required_speed)
+            turn_speed = max(turn_speed, required_speed)
+
+        if abs(d_theta) > self.forward_angle_threshold:
+            return float(np.clip(turn_speed, 0.0, self.max_turn_path_speed))
+        return float(np.clip(full_speed, 0.0, self.max_path_speed))
+
+    def step(
+        self,
+        current_pose: Pose2D,
+        remaining_steps: int | None = None,
+        step_dt: float | None = None,
+    ) -> VelocityCommand:
         if self.path is None or self.path_helper is None:
             self.set_random_target_path(current_pose)
 
         pt_robot = np.array([current_pose.x, current_pose.y], dtype=float)
-        path_end = self.path[-1]
-        dist_to_target = float(np.linalg.norm(pt_robot - path_end))
-        if dist_to_target < self.stop_distance_threshold:
-            self.set_random_target_path(current_pose)
+        if self.update_completion_status(current_pose):
+            if self.auto_resample_on_completion:
+                self.set_random_target_path(current_pose)
+            else:
+                return VelocityCommand(linear_velocity=0.0, angular_velocity=0.0)
 
         _, pt_path_length, pt_seg_idx, _ = self.path_helper.find_nearest(pt_robot)
+        remaining_distance = self._remaining_path_distance(pt_path_length)
         pt_target = self.path_helper.get_point_by_distance(
             distance=pt_path_length + self.lookahead_distance,
             seg_id=pt_seg_idx[0],
@@ -220,9 +283,12 @@ class RandomPathFollower:
 
         vec_target_unit = vec_target / target_norm
         d_theta = vector_angle(vec_robot_unit, vec_target_unit)
-        linear_velocity = self.path_speed
-        if abs(d_theta) > self.forward_angle_threshold:
-            linear_velocity = self.turn_path_speed
+        linear_velocity = self._target_linear_velocity(
+            d_theta=d_theta,
+            remaining_distance=remaining_distance,
+            remaining_steps=remaining_steps,
+            step_dt=step_dt,
+        )
         angular_velocity = -self.angular_gain * d_theta
         angular_velocity = float(np.clip(angular_velocity, -self.max_angular_velocity, self.max_angular_velocity))
         return VelocityCommand(linear_velocity=float(linear_velocity), angular_velocity=angular_velocity)
