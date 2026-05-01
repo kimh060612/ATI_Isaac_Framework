@@ -456,6 +456,14 @@ class FixedWayPointFollower:
         recovery_linear_speed: float = 0.8,
         closed_path: bool = True,
         smoothing_passes: int = 2,
+        use_mpc: bool = True,
+        mpc_horizon_steps: int = 12,
+        mpc_angular_samples: int = 9,
+        mpc_path_error_weight: float = 80.0,
+        mpc_heading_error_weight: float = 8.0,
+        mpc_progress_weight: float = 2.0,
+        mpc_speed_weight: float = 1.0,
+        mpc_angular_weight: float = 0.05,
     ):
         if len(waypoints) < 2:
             raise ValueError("waypoints must contain at least two poses.")
@@ -470,6 +478,14 @@ class FixedWayPointFollower:
         self.recovery_linear_speed = max(0.0, float(recovery_linear_speed))
         self.closed_path = bool(closed_path)
         self.smoothing_passes = max(0, int(smoothing_passes))
+        self.use_mpc = bool(use_mpc)
+        self.mpc_horizon_steps = max(1, int(mpc_horizon_steps))
+        self.mpc_angular_samples = max(3, int(mpc_angular_samples))
+        self.mpc_path_error_weight = max(0.0, float(mpc_path_error_weight))
+        self.mpc_heading_error_weight = max(0.0, float(mpc_heading_error_weight))
+        self.mpc_progress_weight = max(0.0, float(mpc_progress_weight))
+        self.mpc_speed_weight = max(0.0, float(mpc_speed_weight))
+        self.mpc_angular_weight = max(0.0, float(mpc_angular_weight))
         self.path_distance = 0.0
         self.lap_count = 0
         self.path = self._build_path()
@@ -508,6 +524,13 @@ class FixedWayPointFollower:
             return wrapped
         return float(np.clip(distance, 0.0, path_length))
 
+    def _progress_delta(self, start_distance: float, end_distance: float) -> float:
+        path_length = self.path_helper.get_path_length()
+        delta = float(end_distance) - float(start_distance)
+        if self.closed_path and path_length > 1e-6 and delta < -0.5 * path_length:
+            delta += path_length
+        return max(0.0, delta)
+
     def _point_at_distance(self, distance: float, seg_id: int = 0) -> np.ndarray:
         path_length = self.path_helper.get_path_length()
         if self.closed_path and path_length > 1e-6:
@@ -524,11 +547,120 @@ class FixedWayPointFollower:
             return np.array([1.0, 0.0], dtype=float)
         return tangent / tangent_norm
 
+    def _sync_progress_from_pose(self, nearest_distance: float, path_error: float) -> None:
+        path_length = self.path_helper.get_path_length()
+        if path_length <= 1e-6:
+            self.path_distance = 0.0
+            return
+        if self.closed_path:
+            forward_delta = (float(nearest_distance) - self.path_distance) % path_length
+            if forward_delta < max(self.lookahead_distance, self.linear_speed * 0.25) or path_error > self.max_path_error:
+                self.path_distance = float(nearest_distance)
+        elif nearest_distance >= self.path_distance or path_error > self.max_path_error:
+            self.path_distance = float(nearest_distance)
+
+    def _rollout_pose(self, pose: Pose2D, linear_velocity: float, angular_velocity: float, dt: float) -> Pose2D:
+        if abs(angular_velocity) < 1e-6:
+            next_x = pose.x + linear_velocity * np.cos(pose.theta) * dt
+            next_y = pose.y + linear_velocity * np.sin(pose.theta) * dt
+        else:
+            next_theta = pose.theta + angular_velocity * dt
+            radius = linear_velocity / angular_velocity
+            next_x = pose.x + radius * (np.sin(next_theta) - np.sin(pose.theta))
+            next_y = pose.y - radius * (np.cos(next_theta) - np.cos(pose.theta))
+        next_theta = pose.theta + angular_velocity * dt
+        next_theta = float(np.arctan2(np.sin(next_theta), np.cos(next_theta)))
+        return Pose2D(x=float(next_x), y=float(next_y), theta=next_theta)
+
+    def _mpc_velocity_candidates(self, path_error: float) -> np.ndarray:
+        if path_error > self.max_path_error:
+            return np.array([
+                self.recovery_linear_speed,
+                0.5 * self.linear_speed,
+                0.75 * self.linear_speed,
+                self.linear_speed,
+            ], dtype=float)
+        return np.array([
+            0.6 * self.linear_speed,
+            0.8 * self.linear_speed,
+            self.linear_speed,
+        ], dtype=float)
+
+    def _mpc_command(
+        self,
+        current_pose: Pose2D,
+        step_dt: float,
+        path_error: float,
+    ) -> VelocityCommand:
+        linear_candidates = np.clip(
+            self._mpc_velocity_candidates(path_error),
+            0.0,
+            self.linear_speed,
+        )
+        angular_candidates = np.linspace(
+            -self.max_angular_velocity,
+            self.max_angular_velocity,
+            self.mpc_angular_samples,
+            dtype=float,
+        )
+        best_cost = np.inf
+        best_command = VelocityCommand(linear_velocity=self.linear_speed, angular_velocity=0.0)
+        start_distance = self.path_distance
+
+        for linear_velocity in linear_candidates:
+            for angular_velocity in angular_candidates:
+                rollout_pose = current_pose
+                rollout_distance = start_distance
+                cost = 0.0
+                for horizon_idx in range(1, self.mpc_horizon_steps + 1):
+                    rollout_pose = self._rollout_pose(
+                        rollout_pose,
+                        float(linear_velocity),
+                        float(angular_velocity),
+                        step_dt,
+                    )
+                    rollout_point = np.array([rollout_pose.x, rollout_pose.y], dtype=float)
+                    _, nearest_distance, nearest_seg, rollout_error = self.path_helper.find_nearest(rollout_point)
+                    if self.closed_path:
+                        forward_delta = self._progress_delta(rollout_distance, nearest_distance)
+                        if forward_delta < self.linear_speed * step_dt * 2.0:
+                            rollout_distance = nearest_distance
+                    else:
+                        rollout_distance = max(rollout_distance, nearest_distance)
+
+                    tangent_unit = self._tangent_at_distance(rollout_distance, nearest_seg[0])
+                    heading_unit = np.array([np.cos(rollout_pose.theta), np.sin(rollout_pose.theta)], dtype=float)
+                    heading_error = vector_angle(heading_unit, tangent_unit)
+                    progress = self._progress_delta(start_distance, rollout_distance)
+                    cost += self.mpc_path_error_weight * rollout_error * rollout_error
+                    cost += self.mpc_heading_error_weight * heading_error * heading_error
+                    cost -= self.mpc_progress_weight * progress
+                    cost += self.mpc_speed_weight * (self.linear_speed - linear_velocity) ** 2
+                    cost += self.mpc_angular_weight * angular_velocity * angular_velocity
+                    if horizon_idx == self.mpc_horizon_steps:
+                        cost += 2.0 * self.mpc_path_error_weight * rollout_error * rollout_error
+
+                if cost < best_cost:
+                    best_cost = cost
+                    best_command = VelocityCommand(
+                        linear_velocity=float(linear_velocity),
+                        angular_velocity=float(angular_velocity),
+                    )
+        return best_command
+
     def step(self, current_pose: Pose2D, step_dt: float | None = None) -> VelocityCommand:
         robot_point = np.array([current_pose.x, current_pose.y], dtype=float)
         nearest_point, nearest_distance, nearest_seg, path_error = self.path_helper.find_nearest(robot_point)
-        if nearest_distance >= self.path_distance or path_error > self.max_path_error:
-            self.path_distance = nearest_distance
+        self._sync_progress_from_pose(nearest_distance, path_error)
+
+        if step_dt is not None and step_dt > 0.0 and self.use_mpc:
+            command = self._mpc_command(
+                current_pose=current_pose,
+                step_dt=float(step_dt),
+                path_error=path_error,
+            )
+            self.path_distance = self._advance_distance(self.path_distance + command.linear_velocity * float(step_dt))
+            return command
 
         if step_dt is not None and step_dt > 0.0:
             self.path_distance = self._advance_distance(self.path_distance + self.linear_speed * float(step_dt))

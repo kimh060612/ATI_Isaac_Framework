@@ -64,10 +64,16 @@ parser.add_argument("--boundary_turn_gain", type=float, default=2.5, help="Headi
 parser.add_argument("--boundary_recovery_speed", type=float, default=0.2, help="Reserved recovery speed parameter for path-boundary control")
 parser.add_argument("--boundary_spin_velocity", type=float, default=0.8, help="In-place yaw velocity in rad/s used at path bounds or after early path completion")
 parser.add_argument("--max_lap_path_length", type=float, default=None, help="Maximum sampled path length per lap in meters; defaults to the feasible length from max_path_speed and lap_period")
-parser.add_argument("--waypoint_count", type=int, default=8)
+parser.add_argument("--waypoint_count", type=int, default=4, help="Deprecated; fixed MPC path always uses the four edge midpoints of path_bounds.")
 parser.add_argument("--fixed_path_error", type=float, default=0.08, help="Path error threshold that makes the fixed follower slow down for recovery")
 parser.add_argument("--fixed_recovery_speed", type=float, default=0.8, help="Linear speed used when fixed follower is correcting path error")
-parser.add_argument("--fixed_smoothing_passes", type=int, default=3, help="Chaikin smoothing passes for the fixed waypoint path")
+parser.add_argument("--fixed_smoothing_passes", type=int, default=0, help="Chaikin smoothing passes for the fixed waypoint path")
+parser.add_argument("--mpc_horizon_steps", type=int, default=12)
+parser.add_argument("--mpc_angular_samples", type=int, default=9)
+parser.add_argument("--mpc_path_error_weight", type=float, default=80.0)
+parser.add_argument("--mpc_heading_error_weight", type=float, default=8.0)
+parser.add_argument("--mpc_progress_weight", type=float, default=2.0)
+parser.add_argument("--mpc_speed_weight", type=float, default=1.0)
 parser.add_argument("--warmup_laps", type=int, default=1, help="Number of initial waypoint laps to skip policy updates and logging.")
 parser.add_argument("--spawn_random_objs", action="store_true", help="Spawn random scene objects. The built-in path follower does not avoid them.")
 args = parser.parse_args()
@@ -103,6 +109,12 @@ def initialize_wandb(context_len, max_laps, max_steps, max_lap_path_length=None,
             "fixed_path_error": args.fixed_path_error,
             "fixed_recovery_speed": args.fixed_recovery_speed,
             "fixed_smoothing_passes": args.fixed_smoothing_passes,
+            "mpc_horizon_steps": args.mpc_horizon_steps,
+            "mpc_angular_samples": args.mpc_angular_samples,
+            "mpc_path_error_weight": args.mpc_path_error_weight,
+            "mpc_heading_error_weight": args.mpc_heading_error_weight,
+            "mpc_progress_weight": args.mpc_progress_weight,
+            "mpc_speed_weight": args.mpc_speed_weight,
             "max_laps": max_laps,
             "max_steps": max_steps,
             "l3_mde_model": "Depth-Anything-V2-Small-hf",
@@ -191,7 +203,7 @@ def make_syn_data_cache() -> dict:
 def build_fixed_path_waypoints(
     bounds: tuple[float, float, float, float],
     margin: float,
-    waypoint_count: int,
+    waypoint_count:int=16
 ) -> list[Pose2D]:
     x_min, x_max, y_min, y_max = (float(value) for value in bounds)
     margin = max(0.0, float(margin))
@@ -215,7 +227,7 @@ def build_fixed_path_waypoints(
 if __name__ == "__main__":
     CHANGE_CONTEXT_EVERY = args.lap_period
     WARMUP_LAPS = max(0, int(args.warmup_laps))
-    DATA_PATH = f"{args.data_path}/experiment_{args.exp_name}_{args.reward_type}_{args.lap_period}steps_{args.waypoint_count}waypoints"
+    DATA_PATH = f"{args.data_path}/experiment_{args.exp_name}_{args.reward_type}_{args.lap_period}steps_4midpoints"
     MAX_LAPS = args.max_laps
     MAX_STEPS = CHANGE_CONTEXT_EVERY * MAX_LAPS
 
@@ -227,7 +239,7 @@ if __name__ == "__main__":
     limo_config = ATIBaseRobotConfig(robot_name="limo")
     limo_config.set_limo_config()
     render_config = ATIBaseConfig(
-        name="ati_limo_linucb_random_path",
+        name="ati_limo_linucb_fixed_mpc_path",
         robot_config=limo_config,
     )
     render_config.set_rendering_mode("realtime")
@@ -293,7 +305,6 @@ if __name__ == "__main__":
     fixed_waypoints = build_fixed_path_waypoints(
         bounds=tuple(args.path_bounds),
         margin=args.path_bounds_margin,
-        waypoint_count=args.waypoint_count,
     )
     path_follower = FixedWayPointFollower(
         waypoints=fixed_waypoints,
@@ -306,6 +317,13 @@ if __name__ == "__main__":
         recovery_linear_speed=args.fixed_recovery_speed,
         closed_path=True,
         smoothing_passes=args.fixed_smoothing_passes,
+        use_mpc=True,
+        mpc_horizon_steps=args.mpc_horizon_steps,
+        mpc_angular_samples=args.mpc_angular_samples,
+        mpc_path_error_weight=args.mpc_path_error_weight,
+        mpc_heading_error_weight=args.mpc_heading_error_weight,
+        mpc_progress_weight=args.mpc_progress_weight,
+        mpc_speed_weight=args.mpc_speed_weight,
     )
 
     step = 0
