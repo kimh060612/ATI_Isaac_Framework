@@ -59,6 +59,10 @@ parser.add_argument("--max_angular_velocity", type=float, default=3.0, help="Yaw
 parser.add_argument("--forward_angle_threshold", type=float, default=float(np.pi / 3.0), help="Heading-error threshold in radians for using full path_speed")
 parser.add_argument("--stop_distance_threshold", type=float, default=0.35, help="Distance in meters from path end that completes the current waypoint lap")
 parser.add_argument("--path_bounds", type=float, nargs=4, default=(-1.2, 1.8, 0.0, 1.2), metavar=("X_MIN", "X_MAX", "Y_MIN", "Y_MAX"))
+parser.add_argument("--path_bounds_margin", type=float, default=0.1, help="Inset margin used for waypoint sampling and command-level bounds guarding")
+parser.add_argument("--boundary_turn_gain", type=float, default=2.5, help="Heading correction gain used when the robot approaches path bounds")
+parser.add_argument("--boundary_recovery_speed", type=float, default=0.2, help="Maximum forward speed while recovering back inside safe path bounds")
+parser.add_argument("--max_lap_path_length", type=float, default=None, help="Maximum sampled path length per lap in meters; defaults to the feasible length from max_path_speed and lap_period")
 parser.add_argument("--waypoint_count", type=int, default=8)
 parser.add_argument("--warmup_laps", type=int, default=1, help="Number of initial waypoint laps to skip policy updates and logging.")
 parser.add_argument("--spawn_random_objs", action="store_true", help="Spawn random scene objects. The built-in path follower does not avoid them.")
@@ -68,7 +72,7 @@ RANDOM_SEED = 42
 VERBOSE = True
 DEBUG = True
 
-def initialize_wandb(context_len, max_laps, max_steps, exp_name=None):
+def initialize_wandb(context_len, max_laps, max_steps, max_lap_path_length=None, exp_name=None):
     return wandb.init(
         entity="artificial_tripartite_intelligence_team",
         project="ati_sensor_control_prototype",
@@ -88,6 +92,9 @@ def initialize_wandb(context_len, max_laps, max_steps, exp_name=None):
             "min_motion_blur_speed": args.min_motion_blur_speed,
             "lap_speed_margin": args.lap_speed_margin,
             "forward_angle_threshold": args.forward_angle_threshold,
+            "path_bounds": tuple(args.path_bounds),
+            "path_bounds_margin": args.path_bounds_margin,
+            "max_lap_path_length": max_lap_path_length,
             "max_laps": max_laps,
             "max_steps": max_steps,
             "l3_mde_model": "Depth-Anything-V2-Small-hf",
@@ -202,6 +209,9 @@ if __name__ == "__main__":
         rendering_dt=render_config.rendering_dt,
         stage_units_in_meters=render_config.stage_units_in_meters,
     )
+    max_lap_path_length = args.max_lap_path_length
+    if max_lap_path_length is None:
+        max_lap_path_length = args.max_path_speed * args.lap_period * render_config.rendering_dt / max(args.lap_speed_margin, 1e-6)
 
     context_agent_speed = [1.5, 2.0, 1.5, 2.0, 1.5]
     trajectory = build_default_context_trajectory(
@@ -258,6 +268,10 @@ if __name__ == "__main__":
         max_turn_path_speed=args.max_turn_path_speed,
         min_motion_blur_speed=args.min_motion_blur_speed,
         lap_speed_margin=args.lap_speed_margin,
+        bounds_margin=args.path_bounds_margin,
+        boundary_turn_gain=args.boundary_turn_gain,
+        boundary_recovery_speed=args.boundary_recovery_speed,
+        max_path_length=max_lap_path_length,
         lookahead_distance=args.lookahead_distance,
         angular_gain=args.angular_gain,
         max_angular_velocity=args.max_angular_velocity,
@@ -274,6 +288,7 @@ if __name__ == "__main__":
         context_len=CHANGE_CONTEXT_EVERY,
         max_laps=MAX_LAPS,
         max_steps=MAX_STEPS,
+        max_lap_path_length=max_lap_path_length,
         exp_name=f"ati_limo_depthany_{l3_mde_config.reward_type}_{args.exp_name}",
     )
     log_context_history = []

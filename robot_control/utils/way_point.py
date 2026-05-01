@@ -130,6 +130,10 @@ class RandomPathFollower:
         max_turn_path_speed: float = 1.0,
         min_motion_blur_speed: float = 1.2,
         lap_speed_margin: float = 1.25,
+        bounds_margin: float = 0.15,
+        boundary_turn_gain: float = 2.5,
+        boundary_recovery_speed: float = 0.2,
+        max_path_length: float | None = None,
         auto_resample_on_completion: bool = True,
     ):
         self.x_min, self.x_max, self.y_min, self.y_max = (float(v) for v in bounds)
@@ -148,6 +152,10 @@ class RandomPathFollower:
             max_turn_path_speed=max_turn_path_speed,
             min_motion_blur_speed=min_motion_blur_speed,
             lap_speed_margin=lap_speed_margin,
+            bounds_margin=bounds_margin,
+            boundary_turn_gain=boundary_turn_gain,
+            boundary_recovery_speed=boundary_recovery_speed,
+            max_path_length=max_path_length,
             angular_gain=angular_gain,
             max_angular_velocity=max_angular_velocity,
             stop_distance_threshold=stop_distance_threshold,
@@ -162,6 +170,10 @@ class RandomPathFollower:
         max_turn_path_speed: float | None = None,
         min_motion_blur_speed: float | None = None,
         lap_speed_margin: float | None = None,
+        bounds_margin: float | None = None,
+        boundary_turn_gain: float | None = None,
+        boundary_recovery_speed: float | None = None,
+        max_path_length: float | None = None,
         angular_gain: float | None = None,
         max_angular_velocity: float | None = None,
         stop_distance_threshold: float | None = None,
@@ -179,6 +191,16 @@ class RandomPathFollower:
             self.min_motion_blur_speed = max(0.0, float(min_motion_blur_speed))
         if lap_speed_margin is not None:
             self.lap_speed_margin = max(1.0, float(lap_speed_margin))
+        if bounds_margin is not None:
+            self.bounds_margin = max(0.0, float(bounds_margin))
+        if boundary_turn_gain is not None:
+            self.boundary_turn_gain = max(0.0, float(boundary_turn_gain))
+        if boundary_recovery_speed is not None:
+            self.boundary_recovery_speed = max(0.0, float(boundary_recovery_speed))
+        if max_path_length is not None:
+            self.max_path_length = max(0.0, float(max_path_length))
+        elif not hasattr(self, "max_path_length"):
+            self.max_path_length = None
         if angular_gain is not None:
             self.angular_gain = float(angular_gain)
         if max_angular_velocity is not None:
@@ -188,22 +210,74 @@ class RandomPathFollower:
         if forward_angle_threshold is not None:
             self.forward_angle_threshold = float(np.clip(forward_angle_threshold, 0.0, np.pi))
 
+    def _safe_bounds(self) -> tuple[float, float, float, float]:
+        x_margin = min(self.bounds_margin, max(0.0, 0.5 * (self.x_max - self.x_min) - 1e-6))
+        y_margin = min(self.bounds_margin, max(0.0, 0.5 * (self.y_max - self.y_min) - 1e-6))
+        return (
+            self.x_min + x_margin,
+            self.x_max - x_margin,
+            self.y_min + y_margin,
+            self.y_max - y_margin,
+        )
+
     def _sample_point(self) -> np.ndarray:
+        x_min, x_max, y_min, y_max = self._safe_bounds()
         return np.array([
-            self.rng.uniform(self.x_min, self.x_max),
-            self.rng.uniform(self.y_min, self.y_max),
+            self.rng.uniform(x_min, x_max),
+            self.rng.uniform(y_min, y_max),
         ], dtype=float)
 
     def _keep_inside_bounds(self, point: np.ndarray) -> np.ndarray:
+        x_min, x_max, y_min, y_max = self._safe_bounds()
         return np.array([
-            np.clip(point[0], self.x_min, self.x_max),
-            np.clip(point[1], self.y_min, self.y_max),
+            np.clip(point[0], x_min, x_max),
+            np.clip(point[1], y_min, y_max),
         ], dtype=float)
+
+    def _is_inside_safe_bounds(self, point: np.ndarray) -> bool:
+        x_min, x_max, y_min, y_max = self._safe_bounds()
+        return bool(x_min <= point[0] <= x_max and y_min <= point[1] <= y_max)
+
+    def _distance_to_safe_boundary_along_heading(self, point: np.ndarray, heading: np.ndarray) -> float:
+        x_min, x_max, y_min, y_max = self._safe_bounds()
+        distances = []
+        if heading[0] > 1e-6:
+            distances.append((x_max - point[0]) / heading[0])
+        elif heading[0] < -1e-6:
+            distances.append((x_min - point[0]) / heading[0])
+        if heading[1] > 1e-6:
+            distances.append((y_max - point[1]) / heading[1])
+        elif heading[1] < -1e-6:
+            distances.append((y_min - point[1]) / heading[1])
+        positive_distances = [dist for dist in distances if dist >= 0.0]
+        if not positive_distances:
+            return 0.0
+        return float(min(positive_distances))
+
+    def _sample_bounded_path_points(self, start: np.ndarray) -> np.ndarray:
+        if self.max_path_length is None or self.waypoint_count <= 2:
+            random_points = [self._sample_point() for _ in range(self.waypoint_count - 1)]
+            return np.vstack([start, *random_points])
+
+        points = [start]
+        segment_budget = self.max_path_length / max(1, self.waypoint_count - 1)
+        for _ in range(self.waypoint_count - 1):
+            prev = points[-1]
+            candidate = prev
+            for _ in range(16):
+                angle = self.rng.uniform(-np.pi, np.pi)
+                radius = self.rng.uniform(0.35 * segment_budget, segment_budget)
+                candidate = self._keep_inside_bounds(
+                    prev + radius * np.array([np.cos(angle), np.sin(angle)], dtype=float)
+                )
+                if np.linalg.norm(candidate - prev) > 1e-3:
+                    break
+            points.append(candidate)
+        return np.vstack(points)
 
     def set_random_target_path(self, current_pose: Pose2D) -> None:
         start = self._keep_inside_bounds(np.array([current_pose.x, current_pose.y], dtype=float))
-        random_points = [self._sample_point() for _ in range(self.waypoint_count - 1)]
-        points = np.vstack([start, *random_points])
+        points = self._sample_bounded_path_points(start)
         self.path = self._smooth_polyline(points)
         self.path_helper = PathHelper(self.path)
         self.path_id += 1
@@ -252,6 +326,43 @@ class RandomPathFollower:
             return float(np.clip(turn_speed, 0.0, self.max_turn_path_speed))
         return float(np.clip(full_speed, 0.0, self.max_path_speed))
 
+    def _apply_bounds_guard(
+        self,
+        current_pose: Pose2D,
+        linear_velocity: float,
+        angular_velocity: float,
+        step_dt: float | None,
+    ) -> VelocityCommand:
+        if step_dt is None or step_dt <= 0.0:
+            return VelocityCommand(linear_velocity=float(linear_velocity), angular_velocity=float(angular_velocity))
+
+        pt_robot = np.array([current_pose.x, current_pose.y], dtype=float)
+        heading = np.array([np.cos(current_pose.theta), np.sin(current_pose.theta)], dtype=float)
+        safe_distance = self._distance_to_safe_boundary_along_heading(pt_robot, heading)
+        max_safe_velocity = max(0.0, safe_distance / float(step_dt))
+        linear_velocity = min(float(linear_velocity), max_safe_velocity)
+
+        projected = pt_robot + heading * linear_velocity * float(step_dt)
+        if self._is_inside_safe_bounds(pt_robot) and self._is_inside_safe_bounds(projected):
+            return VelocityCommand(linear_velocity=float(linear_velocity), angular_velocity=float(angular_velocity))
+
+        safe_target = self._keep_inside_bounds(pt_robot)
+        if np.linalg.norm(safe_target - pt_robot) < 1e-6:
+            x_min, x_max, y_min, y_max = self._safe_bounds()
+            safe_target = np.array([(x_min + x_max) * 0.5, (y_min + y_max) * 0.5], dtype=float)
+        target_vec = safe_target - pt_robot
+        target_norm = float(np.linalg.norm(target_vec))
+        if target_norm > 1e-6:
+            target_unit = target_vec / target_norm
+            d_theta = vector_angle(heading, target_unit)
+            angular_velocity = -self.boundary_turn_gain * d_theta
+
+        angular_velocity = float(np.clip(angular_velocity, -self.max_angular_velocity, self.max_angular_velocity))
+        return VelocityCommand(
+            linear_velocity=float(min(linear_velocity, self.boundary_recovery_speed)),
+            angular_velocity=angular_velocity,
+        )
+
     def step(
         self,
         current_pose: Pose2D,
@@ -291,4 +402,9 @@ class RandomPathFollower:
         )
         angular_velocity = -self.angular_gain * d_theta
         angular_velocity = float(np.clip(angular_velocity, -self.max_angular_velocity, self.max_angular_velocity))
-        return VelocityCommand(linear_velocity=float(linear_velocity), angular_velocity=angular_velocity)
+        return self._apply_bounds_guard(
+            current_pose=current_pose,
+            linear_velocity=linear_velocity,
+            angular_velocity=angular_velocity,
+            step_dt=step_dt,
+        )
