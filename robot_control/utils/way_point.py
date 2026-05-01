@@ -125,19 +125,45 @@ class RandomPathFollower:
         rng: np.random.Generator,
         stop_distance_threshold: float = 0.35,
         forward_angle_threshold: float = np.pi / 3.0,
+        turn_path_speed: float = 0.15,
     ):
         self.x_min, self.x_max, self.y_min, self.y_max = (float(v) for v in bounds)
         self.waypoint_count = max(2, int(waypoint_count))
-        self.path_speed = float(path_speed)
         self.lookahead_distance = float(lookahead_distance)
-        self.angular_gain = float(angular_gain)
-        self.max_angular_velocity = float(max_angular_velocity)
-        self.stop_distance_threshold = float(stop_distance_threshold)
-        self.forward_angle_threshold = float(forward_angle_threshold)
         self.rng = rng
         self.path = None
         self.path_helper = None
         self.path_id = 0
+        self.set_motion_limits(
+            path_speed=path_speed,
+            turn_path_speed=turn_path_speed,
+            angular_gain=angular_gain,
+            max_angular_velocity=max_angular_velocity,
+            stop_distance_threshold=stop_distance_threshold,
+            forward_angle_threshold=forward_angle_threshold,
+        )
+
+    def set_motion_limits(
+        self,
+        path_speed: float | None = None,
+        turn_path_speed: float | None = None,
+        angular_gain: float | None = None,
+        max_angular_velocity: float | None = None,
+        stop_distance_threshold: float | None = None,
+        forward_angle_threshold: float | None = None,
+    ) -> None:
+        if path_speed is not None:
+            self.path_speed = max(0.0, float(path_speed))
+        if turn_path_speed is not None:
+            self.turn_path_speed = max(0.0, float(turn_path_speed))
+        if angular_gain is not None:
+            self.angular_gain = float(angular_gain)
+        if max_angular_velocity is not None:
+            self.max_angular_velocity = max(0.0, float(max_angular_velocity))
+        if stop_distance_threshold is not None:
+            self.stop_distance_threshold = max(0.0, float(stop_distance_threshold))
+        if forward_angle_threshold is not None:
+            self.forward_angle_threshold = float(np.clip(forward_angle_threshold, 0.0, np.pi))
 
     def _sample_point(self) -> np.ndarray:
         return np.array([
@@ -194,7 +220,9 @@ class RandomPathFollower:
 
         vec_target_unit = vec_target / target_norm
         d_theta = vector_angle(vec_robot_unit, vec_target_unit)
-        linear_velocity = 0.0 if abs(d_theta) > self.forward_angle_threshold else self.path_speed
+        linear_velocity = self.path_speed
+        if abs(d_theta) > self.forward_angle_threshold:
+            linear_velocity = self.turn_path_speed
         angular_velocity = -self.angular_gain * d_theta
         angular_velocity = float(np.clip(angular_velocity, -self.max_angular_velocity, self.max_angular_velocity))
         return VelocityCommand(linear_velocity=float(linear_velocity), angular_velocity=angular_velocity)
