@@ -58,9 +58,9 @@ parser.add_argument("--angular_gain", type=float, default=2.5, help="Heading-err
 parser.add_argument("--max_angular_velocity", type=float, default=3.0, help="Yaw-rate command limit in rad/s")
 parser.add_argument("--forward_angle_threshold", type=float, default=float(np.pi / 3.0), help="Heading-error threshold in radians for using full path_speed")
 parser.add_argument("--stop_distance_threshold", type=float, default=0.35, help="Distance in meters from path end that completes the current waypoint lap")
-parser.add_argument("--path_bounds", type=float, nargs=4, default=(-1.2, 1.8, 0.0, 1.8), metavar=("X_MIN", "X_MAX", "Y_MIN", "Y_MAX"))
+parser.add_argument("--path_bounds", type=float, nargs=4, default=(-1.2, 1.8, 0.0, 1.2), metavar=("X_MIN", "X_MAX", "Y_MIN", "Y_MAX"))
 parser.add_argument("--waypoint_count", type=int, default=8)
-parser.add_argument("--warmup_laps", type=int, default=2, help="Number of initial waypoint laps to skip policy updates and logging.")
+parser.add_argument("--warmup_laps", type=int, default=1, help="Number of initial waypoint laps to skip policy updates and logging.")
 parser.add_argument("--spawn_random_objs", action="store_true", help="Spawn random scene objects. The built-in path follower does not avoid them.")
 args = parser.parse_args()
 
@@ -406,7 +406,7 @@ if __name__ == "__main__":
                         step=lap_idx - WARMUP_LAPS,
                         commit=True,
                     )
-                    save_synthetic_data(DATA_PATH, syn_data_cache, lap_idx - WARMUP_LAPS)
+                save_synthetic_data(DATA_PATH, syn_data_cache, lap_idx - WARMUP_LAPS)
 
                 context = trajectory.value_at(step + 1)
                 curr_light = context["light_intensity"]
