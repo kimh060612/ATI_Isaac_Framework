@@ -431,3 +431,138 @@ class RandomPathFollower:
             angular_velocity=angular_velocity,
             step_dt=step_dt,
         )
+
+
+class FixedWayPointFollower:
+    """
+    High-speed follower for a fixed closed waypoint path.
+
+    This controller tracks the continuous path distance on the waypoint
+    polyline instead of switching between discrete waypoint targets. That keeps
+    the lookahead target on the path and avoids the corner-cutting behavior that
+    shows up when the robot drives directly toward sparse waypoints.
+    """
+
+    def __init__(
+        self,
+        waypoints: list[Pose2D],
+        waypoint_threshold: float = 0.05,
+        linear_speed: float = 2.0,
+        lookahead_distance: float = 0.6,
+        angular_gain: float = 2.5,
+        cross_track_gain: float = 3.0,
+        max_angular_velocity: float = 1.0,
+        max_path_error: float = 0.08,
+        recovery_linear_speed: float = 0.8,
+        closed_path: bool = True,
+        smoothing_passes: int = 2,
+    ):
+        if len(waypoints) < 2:
+            raise ValueError("waypoints must contain at least two poses.")
+        self.waypoints = waypoints
+        self.waypoint_threshold = max(0.0, float(waypoint_threshold))
+        self.linear_speed = max(0.0, float(linear_speed))
+        self.lookahead_distance = max(0.0, float(lookahead_distance))
+        self.angular_gain = float(angular_gain)
+        self.cross_track_gain = float(cross_track_gain)
+        self.max_angular_velocity = max(0.0, float(max_angular_velocity))
+        self.max_path_error = max(0.0, float(max_path_error))
+        self.recovery_linear_speed = max(0.0, float(recovery_linear_speed))
+        self.closed_path = bool(closed_path)
+        self.smoothing_passes = max(0, int(smoothing_passes))
+        self.path_distance = 0.0
+        self.lap_count = 0
+        self.path = self._build_path()
+        self.path_helper = PathHelper(self.path)
+
+    def _build_path(self) -> np.ndarray:
+        points = np.array([[pose.x, pose.y] for pose in self.waypoints], dtype=float)
+        if self.closed_path and np.linalg.norm(points[0] - points[-1]) > 1e-6:
+            points = np.vstack([points, points[0]])
+        for _ in range(self.smoothing_passes):
+            points = self._chaikin_smooth(points)
+        return points
+
+    def _chaikin_smooth(self, points: np.ndarray) -> np.ndarray:
+        smoothed = [points[0]]
+        end_idx = len(points) - 1
+        for idx in range(end_idx):
+            p0 = points[idx]
+            p1 = points[idx + 1]
+            smoothed.append(0.75 * p0 + 0.25 * p1)
+            smoothed.append(0.25 * p0 + 0.75 * p1)
+        smoothed.append(points[-1])
+        return np.asarray(smoothed, dtype=float)
+
+    def reset(self) -> None:
+        self.path_distance = 0.0
+        self.lap_count = 0
+
+    def _advance_distance(self, distance: float) -> float:
+        path_length = self.path_helper.get_path_length()
+        if path_length <= 1e-6:
+            return 0.0
+        if self.closed_path:
+            laps, wrapped = divmod(float(distance), path_length)
+            self.lap_count += int(laps)
+            return wrapped
+        return float(np.clip(distance, 0.0, path_length))
+
+    def _point_at_distance(self, distance: float, seg_id: int = 0) -> np.ndarray:
+        path_length = self.path_helper.get_path_length()
+        if self.closed_path and path_length > 1e-6:
+            distance = float(distance) % path_length
+        return self.path_helper.get_point_by_distance(distance, seg_id)
+
+    def _tangent_at_distance(self, distance: float, seg_id: int = 0) -> np.ndarray:
+        eps = max(0.05, self.lookahead_distance * 0.25)
+        p0 = self._point_at_distance(distance, seg_id)
+        p1 = self._point_at_distance(distance + eps, seg_id)
+        tangent = p1 - p0
+        tangent_norm = float(np.linalg.norm(tangent))
+        if tangent_norm < 1e-6:
+            return np.array([1.0, 0.0], dtype=float)
+        return tangent / tangent_norm
+
+    def step(self, current_pose: Pose2D, step_dt: float | None = None) -> VelocityCommand:
+        robot_point = np.array([current_pose.x, current_pose.y], dtype=float)
+        nearest_point, nearest_distance, nearest_seg, path_error = self.path_helper.find_nearest(robot_point)
+        if nearest_distance >= self.path_distance or path_error > self.max_path_error:
+            self.path_distance = nearest_distance
+
+        if step_dt is not None and step_dt > 0.0:
+            self.path_distance = self._advance_distance(self.path_distance + self.linear_speed * float(step_dt))
+
+        lookahead_distance = self.path_distance + max(self.lookahead_distance, self.linear_speed * 0.3)
+        target_point = self._point_at_distance(lookahead_distance, nearest_seg[0])
+        tangent_unit = self._tangent_at_distance(self.path_distance, nearest_seg[0])
+        heading_unit = np.array([np.cos(current_pose.theta), np.sin(current_pose.theta)], dtype=float)
+
+        target_vec = target_point - robot_point
+        target_norm = float(np.linalg.norm(target_vec))
+        if target_norm < 1e-6:
+            target_unit = tangent_unit
+        else:
+            target_unit = target_vec / target_norm
+
+        heading_error = vector_angle(heading_unit, target_unit)
+        path_to_robot = robot_point - nearest_point
+        signed_cross_track_error = float(
+            tangent_unit[0] * path_to_robot[1] - tangent_unit[1] * path_to_robot[0]
+        )
+        angular_velocity = (
+            -self.angular_gain * heading_error
+            -self.cross_track_gain * signed_cross_track_error
+        )
+        angular_velocity = float(np.clip(angular_velocity, -self.max_angular_velocity, self.max_angular_velocity))
+
+        linear_velocity = self.linear_speed
+        if path_error > self.max_path_error:
+            linear_velocity = min(linear_velocity, self.recovery_linear_speed)
+        if abs(heading_error) > np.pi / 2.0:
+            linear_velocity = min(linear_velocity, self.recovery_linear_speed)
+
+        return VelocityCommand(
+            linear_velocity=float(linear_velocity),
+            angular_velocity=angular_velocity,
+        )

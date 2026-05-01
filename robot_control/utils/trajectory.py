@@ -223,20 +223,22 @@ def plot_context_trajectory(
 
 
 if __name__ == "__main__":
-    NUM_STEPS = 30 * 250
+    LAP_PERIOD = 30
     import numpy as np
+    speed_vals = [1.0, 2.0, 1.0, 2.0, 1.0]
+    light_vals = [500, 6000, 500, 6000, 500]
     trajectory = build_default_context_trajectory(
-        light_values=[200, 1000, 3000, 6000, 9000],
-        speed_values=[0.2 * np.pi / 12, 0.5 * np.pi / 12, 1.0 * np.pi / 12, 1.5 * np.pi / 12, 2.0 * np.pi / 12],
-        light_transition_steps=30 * 200,
-        speed_transition_steps=150,
-        light_hold_steps=30,
-        speed_hold_steps=15,
-        speed_phase_offset_steps=30,
+        light_values=light_vals,
+        speed_values=[s * np.pi / 12 for s in speed_vals],
+        light_transition_steps=LAP_PERIOD * 200,
+        speed_transition_steps=LAP_PERIOD * 10,
+        light_hold_steps=LAP_PERIOD,
+        speed_hold_steps=LAP_PERIOD,
+        speed_phase_offset_steps=LAP_PERIOD,
     )
     plot_context_trajectory(
         trajectory=trajectory,
-        num_steps=NUM_STEPS,
+        num_steps=LAP_PERIOD * 250,
         sampling_period=30,
         save_path="./context_trajectories.png",
     )
