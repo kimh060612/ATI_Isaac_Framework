@@ -32,6 +32,11 @@ from policy.rewards.rewards import reward_flipped_img, reward_test_time_augment,
 from policy import L2DisjointLinUCBRGBCamPolicy, SensorParamSpace
 from robot_control import FixedWayPointFollower, Pose2D, get_limo_pose_2d
 
+# Enable Livestream extension
+from isaacsim.core.utils.extensions import enable_extension
+simulation_app.set_setting("/app/window/drawMouse", True)
+enable_extension("omni.services.livestream.nvcf")
+
 import argparse
 from dataclasses import dataclass
 from PIL import Image
@@ -58,13 +63,13 @@ parser.add_argument("--angular_gain", type=float, default=2.5, help="Heading-err
 parser.add_argument("--max_angular_velocity", type=float, default=1.0, help="Yaw-rate command limit in rad/s")
 parser.add_argument("--forward_angle_threshold", type=float, default=float(np.pi / 3.0), help="Heading-error threshold in radians for using full path_speed")
 parser.add_argument("--stop_distance_threshold", type=float, default=0.35, help="Distance in meters from path end that completes the current waypoint lap")
-parser.add_argument("--path_bounds", type=float, nargs=4, default=(-1.2, 1.8, 0.0, 1.2), metavar=("X_MIN", "X_MAX", "Y_MIN", "Y_MAX"))
+parser.add_argument("--path_bounds", type=float, nargs=4, default=(-1.0, 1.0, 0.0, 1.0), metavar=("X_MIN", "X_MAX", "Y_MIN", "Y_MAX"))
 parser.add_argument("--path_bounds_margin", type=float, default=0.1, help="Inset margin used for waypoint sampling and command-level bounds guarding")
 parser.add_argument("--boundary_turn_gain", type=float, default=2.5, help="Heading correction gain used when the robot approaches path bounds")
 parser.add_argument("--boundary_recovery_speed", type=float, default=0.2, help="Reserved recovery speed parameter for path-boundary control")
 parser.add_argument("--boundary_spin_velocity", type=float, default=0.8, help="In-place yaw velocity in rad/s used at path bounds or after early path completion")
 parser.add_argument("--max_lap_path_length", type=float, default=None, help="Maximum sampled path length per lap in meters; defaults to the feasible length from max_path_speed and lap_period")
-parser.add_argument("--waypoint_count", type=int, default=4, help="Deprecated; fixed MPC path always uses the four edge midpoints of path_bounds.")
+parser.add_argument("--waypoint_count", type=int, default=16, help="Number of waypoints for the fixed MPC path.")
 parser.add_argument("--fixed_path_error", type=float, default=0.08, help="Path error threshold that makes the fixed follower slow down for recovery")
 parser.add_argument("--fixed_recovery_speed", type=float, default=0.8, help="Linear speed used when fixed follower is correcting path error")
 parser.add_argument("--fixed_smoothing_passes", type=int, default=0, help="Chaikin smoothing passes for the fixed waypoint path")
@@ -305,6 +310,7 @@ if __name__ == "__main__":
     fixed_waypoints = build_fixed_path_waypoints(
         bounds=tuple(args.path_bounds),
         margin=args.path_bounds_margin,
+        waypoint_count=args.waypoint_count,
     )
     path_follower = FixedWayPointFollower(
         waypoints=fixed_waypoints,
