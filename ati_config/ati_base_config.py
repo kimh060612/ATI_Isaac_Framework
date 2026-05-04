@@ -68,8 +68,8 @@ class ATIBaseConfig:
             (
                 "overhead", 
                 "/World/OverheadCam",
-                np.array([0.0, -2.0, 5.0]),
-                np.array([0.0, -2.0, 0.0])
+                np.array([0.0, -2.0, 3.0]),
+                np.array([0.0, 0.0, 0.0])
             ),
         ]
         
