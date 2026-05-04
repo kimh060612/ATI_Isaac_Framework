@@ -406,7 +406,7 @@ if __name__ == "__main__":
                         step=lap_idx - WARMUP_LAPS,
                         commit=True,
                     )
-                    save_synthetic_data(DATA_PATH, syn_data_cache, lap_idx - WARMUP_LAPS)
+                save_synthetic_data(DATA_PATH, syn_data_cache, lap_idx - WARMUP_LAPS)
 
                 context = trajectory.value_at(step + 1)
                 curr_light = context["light_intensity"]
