@@ -280,10 +280,12 @@ if __name__ == "__main__":
                 )
 
             pose = get_limo_pose_2d(my_scene)
+            if DEBUG: print(pose)
             cmd = path_follower.step(
                 pose,
                 step_dt=render_config.rendering_dt,
             )
+            if DEBUG: print(f"Motion Command - Linear Velocity: {cmd.linear_velocity:.3f} m/s, Angular Velocity: {cmd.angular_velocity:.3f} rad/s") 
             my_scene.robot_control(
                 time=my_scene.get_simulation_current_time,
                 control_parameters={
