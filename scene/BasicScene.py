@@ -784,12 +784,12 @@ class BaseScene(metaclass=ABCMeta):
             width_attr = panel_light.GetWidthAttr()
             if not width_attr:
                 width_attr = panel_light.CreateWidthAttr()
-            width_attr.Set(2.0)
+            width_attr.Set(4.0)
 
             height_attr = panel_light.GetHeightAttr()
             if not height_attr:
                 height_attr = panel_light.CreateHeightAttr()
-            height_attr.Set(1.2)
+            height_attr.Set(2.4)
 
             translate_attr = panel_prim.GetAttribute("xformOp:translate")
             if translate_attr:
