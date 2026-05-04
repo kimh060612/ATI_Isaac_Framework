@@ -896,16 +896,16 @@ class BaseScene(metaclass=ABCMeta):
             
             # For ease of controlling the agent camera parameters, we used native camera class in Isaac Sim.
             cam_real_prim_path = f"{camera_prim_path}/{self.agent_perspective_cam_prim_path}"
-            cam_rel_position = np.array([0.1, 0.0, 0.1])
+            # cam_rel_position = np.array([0.1, 0.0, 0.1])
         else:
             # This case, the agent USD natively supports RGB(-D) camera on the platform.
             cam_real_prim_path = camera_prim_path
-            cam_rel_position = None
+            # cam_rel_position = None
 
         self.cameras["agent_camera"] = Camera(
             prim_path=cam_real_prim_path,
             resolution=self.agent_camera_resolution,
-            position=cam_rel_position,
+            # position=cam_rel_position,
             annotator_device="cpu"
         )
         return self.cameras["agent_camera"]
