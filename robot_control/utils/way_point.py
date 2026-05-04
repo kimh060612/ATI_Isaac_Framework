@@ -713,7 +713,11 @@ class StraightLineLapFollower:
     def __init__(
         self,
         straight_speed: float = 0.6,
+        linear_acceleration: float = 2.0,
+        linear_deceleration: float = 2.0,
         endpoint_turn_speed: float = 0.8,
+        angular_acceleration: float = 2.0,
+        angular_deceleration: float = 2.0,
         endpoint_distance: float = 1.0,
         position_threshold: float = 0.04,
         heading_threshold: float = 0.04,
@@ -722,8 +726,12 @@ class StraightLineLapFollower:
         forward_angle_threshold: float = np.pi / 3.0,
         recovery_speed: float = 0.15,
     ):
-        self.straight_speed = max(0.0, float(straight_speed))
+        self.max_straight_speed = max(0.0, float(straight_speed))
+        self.linear_acceleration = max(1e-6, float(linear_acceleration))
+        self.linear_deceleration = max(1e-6, float(linear_deceleration))
         self.endpoint_turn_speed = max(0.0, float(endpoint_turn_speed))
+        self.angular_acceleration = max(1e-6, float(angular_acceleration))
+        self.angular_deceleration = max(1e-6, float(angular_deceleration))
         self.endpoint_distance = max(0.0, float(endpoint_distance))
         self.position_threshold = max(0.0, float(position_threshold))
         self.heading_threshold = max(0.0, float(heading_threshold))
@@ -735,6 +743,8 @@ class StraightLineLapFollower:
         )
         self.forward_angle_threshold = float(np.clip(forward_angle_threshold, 0.0, np.pi))
         self.recovery_speed = max(0.0, float(recovery_speed))
+        self.current_linear_velocity = 0.0
+        self.current_angular_velocity = 0.0
         self.phase_index = 0
         self.lap_count = 0
         self.phase_names = (
@@ -752,60 +762,137 @@ class StraightLineLapFollower:
     def reset(self) -> None:
         self.phase_index = 0
         self.lap_count = 0
+        self.current_linear_velocity = 0.0
+        self.current_angular_velocity = 0.0
 
     @property
     def phase_name(self) -> str:
         return self.phase_names[self.phase_index]
 
     def _advance_phase(self) -> None:
+        self.current_linear_velocity = 0.0
+        self.current_angular_velocity = 0.0
         self.phase_index += 1
         if self.phase_index >= len(self.phase_names):
             self.phase_index = 0
             self.lap_count += 1
 
+    def _approach_velocity(
+        self,
+        current_velocity: float,
+        target_velocity: float,
+        acceleration: float,
+        deceleration: float,
+        step_dt: float | None,
+    ) -> float:
+        if step_dt is None or step_dt <= 0.0:
+            return float(target_velocity)
+        delta = float(target_velocity) - float(current_velocity)
+        rate = acceleration if abs(target_velocity) > abs(current_velocity) else deceleration
+        max_delta = rate * float(step_dt)
+        if abs(delta) <= max_delta:
+            return float(target_velocity)
+        return float(current_velocity + np.sign(delta) * max_delta)
+
     def _turn_command(self, current_pose: Pose2D, target_heading: float, step_dt: float | None) -> VelocityCommand:
         heading_error = self._wrap_angle(target_heading - current_pose.theta)
-        if abs(heading_error) <= self.heading_threshold:
+        heading_epsilon = 1e-6
+        if (
+            abs(heading_error) <= heading_epsilon
+            or (
+                abs(heading_error) <= self.heading_threshold
+                and abs(self.current_angular_velocity) <= heading_epsilon
+            )
+        ):
             self._advance_phase()
             return VelocityCommand(linear_velocity=0.0, angular_velocity=0.0)
 
-        angular_velocity = np.sign(heading_error) * self.endpoint_turn_speed
+        stop_angle = max(0.0, abs(heading_error))
+        braking_speed = float(np.sqrt(2.0 * self.angular_deceleration * stop_angle))
+        target_angular_speed = min(self.endpoint_turn_speed, braking_speed)
+        target_angular_velocity = np.sign(heading_error) * target_angular_speed
+        angular_velocity = self._approach_velocity(
+            self.current_angular_velocity,
+            target_angular_velocity,
+            self.angular_acceleration,
+            self.angular_deceleration,
+            step_dt,
+        )
         if step_dt is not None and step_dt > 0.0:
-            angular_velocity = np.sign(heading_error) * min(abs(angular_velocity), abs(heading_error) / step_dt)
+            max_safe_velocity = stop_angle / float(step_dt)
+            angular_velocity = np.sign(heading_error) * min(abs(angular_velocity), max_safe_velocity)
+        self.current_angular_velocity = float(angular_velocity)
         return VelocityCommand(linear_velocity=0.0, angular_velocity=float(angular_velocity))
 
-    def _drive_command(self, current_pose: Pose2D, target: np.ndarray) -> VelocityCommand:
+    def _drive_command(
+        self,
+        current_pose: Pose2D,
+        line_start: np.ndarray,
+        target: np.ndarray,
+        travel_heading: float,
+        step_dt: float | None,
+    ) -> VelocityCommand:
         robot_point = np.array([current_pose.x, current_pose.y], dtype=float)
+        tangent_unit = np.array([np.cos(travel_heading), np.sin(travel_heading)], dtype=float)
         target_vec = target - robot_point
-        distance = float(np.linalg.norm(target_vec))
-        if distance <= self.position_threshold:
+        signed_remaining = float(np.dot(target_vec, tangent_unit))
+        distance_to_target = float(np.linalg.norm(target_vec))
+        position_epsilon = 1e-6
+        if (
+            signed_remaining <= position_epsilon
+            or (
+                distance_to_target <= self.position_threshold
+                and self.current_linear_velocity <= position_epsilon
+            )
+        ):
             self._advance_phase()
             return VelocityCommand(linear_velocity=0.0, angular_velocity=0.0)
 
-        target_heading = float(np.arctan2(target_vec[1], target_vec[0]))
-        heading_error = self._wrap_angle(target_heading - current_pose.theta)
+        segment = target - line_start
+        segment_length = float(np.linalg.norm(segment))
+        segment_progress = float(np.clip(np.dot(robot_point - line_start, tangent_unit), 0.0, segment_length))
+        nearest_point = line_start + tangent_unit * segment_progress
+        path_to_robot = robot_point - nearest_point
+        cross_track_error = float(
+            tangent_unit[0] * path_to_robot[1] - tangent_unit[1] * path_to_robot[0]
+        )
+
+        heading_error = self._wrap_angle(travel_heading - current_pose.theta)
         angular_velocity = float(np.clip(
-            self.heading_gain * heading_error,
+            self.heading_gain * heading_error - self.heading_gain * cross_track_error,
             -self.max_heading_correction,
             self.max_heading_correction,
         ))
 
-        linear_velocity = self.straight_speed
+        stop_distance = max(0.0, signed_remaining)
+        braking_speed = float(np.sqrt(2.0 * self.linear_deceleration * stop_distance))
+        target_linear_velocity = min(self.max_straight_speed, braking_speed)
         if abs(heading_error) > self.forward_angle_threshold:
-            linear_velocity = min(linear_velocity, self.recovery_speed)
+            target_linear_velocity = min(target_linear_velocity, self.recovery_speed)
+        linear_velocity = self._approach_velocity(
+            self.current_linear_velocity,
+            target_linear_velocity,
+            self.linear_acceleration,
+            self.linear_deceleration,
+            step_dt,
+        )
+        if step_dt is not None and step_dt > 0.0:
+            max_safe_velocity = stop_distance / float(step_dt)
+            linear_velocity = min(linear_velocity, max_safe_velocity)
+        self.current_linear_velocity = float(linear_velocity)
         return VelocityCommand(linear_velocity=float(linear_velocity), angular_velocity=angular_velocity)
 
     def step(self, current_pose: Pose2D, step_dt: float | None = None) -> VelocityCommand:
+        origin = np.array([0.0, 0.0], dtype=float)
         positive_endpoint = np.array([self.endpoint_distance, 0.0], dtype=float)
         negative_endpoint = np.array([-self.endpoint_distance, 0.0], dtype=float)
-        origin = np.array([0.0, 0.0], dtype=float)
 
         if self.phase_name == "drive_to_positive_x":
-            return self._drive_command(current_pose, positive_endpoint)
+            return self._drive_command(current_pose, origin, positive_endpoint, 0.0, step_dt)
         if self.phase_name == "turn_to_negative_x":
             return self._turn_command(current_pose, np.pi, step_dt)
         if self.phase_name == "drive_to_negative_x":
-            return self._drive_command(current_pose, negative_endpoint)
+            return self._drive_command(current_pose, positive_endpoint, negative_endpoint, np.pi, step_dt)
         if self.phase_name == "turn_to_positive_x":
             return self._turn_command(current_pose, 0.0, step_dt)
-        return self._drive_command(current_pose, origin)
+        return self._drive_command(current_pose, negative_endpoint, origin, 0.0, step_dt)

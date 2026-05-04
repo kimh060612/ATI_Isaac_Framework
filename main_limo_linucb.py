@@ -47,8 +47,10 @@ parser.add_argument("--max_laps", type=int, default=600)
 parser.add_argument("--lap_period", type=int, default=30, help="Number of rendered steps per policy update.")
 parser.add_argument("--warmup_laps", type=int, default=1, help="Number of initial laps to skip policy updates and logging.")
 parser.add_argument("--spawn_random_objs", action="store_true", help="Spawn random scene objects.")
-parser.add_argument("--path_speed", type=float, default=2.0, help="Straight-line forward speed in m/s.")
-parser.add_argument("--endpoint_turn_speed", type=float, default=0.8, help="In-place yaw speed in rad/s for endpoint 180-degree turns.")
+parser.add_argument("--path_speed", type=float, default=2.0, help="Maximum straight-line forward speed in m/s.")
+parser.add_argument("--path_acceleration", type=float, default=2.0, help="Straight-line acceleration in m/s^2.")
+parser.add_argument("--path_deceleration", type=float, default=2.0, help="Straight-line deceleration in m/s^2.")
+parser.add_argument("--endpoint_turn_speed", type=float, default=0.8, help="Maximum in-place yaw speed in rad/s for endpoint 180-degree turns.")
 parser.add_argument("--endpoint_distance", type=float, default=1.0, help="Endpoint distance from the origin along the x-axis in meters.")
 args = parser.parse_args()
 
@@ -61,6 +63,8 @@ ANGULAR_GAIN = 2.5
 MAX_ANGULAR_VELOCITY = 1.0
 FORWARD_ANGLE_THRESHOLD = float(np.pi / 3.0)
 RECOVERY_SPEED = 0.8
+TURN_ACCELERATION = 2.0
+TURN_DECELERATION = 2.0
 
 def initialize_wandb(context_len, max_laps, max_steps, exp_name=None):
     return wandb.init(
@@ -76,6 +80,8 @@ def initialize_wandb(context_len, max_laps, max_steps, exp_name=None):
             "lap_definition": "straight_line_out_and_back",
             "warmup_laps": args.warmup_laps,
             "path_speed": args.path_speed,
+            "path_acceleration": args.path_acceleration,
+            "path_deceleration": args.path_deceleration,
             "endpoint_turn_speed": args.endpoint_turn_speed,
             "endpoint_distance": args.endpoint_distance,
             "position_threshold": POSITION_THRESHOLD,
@@ -84,6 +90,8 @@ def initialize_wandb(context_len, max_laps, max_steps, exp_name=None):
             "max_angular_velocity": MAX_ANGULAR_VELOCITY,
             "forward_angle_threshold": FORWARD_ANGLE_THRESHOLD,
             "recovery_speed": RECOVERY_SPEED,
+            "turn_acceleration": TURN_ACCELERATION,
+            "turn_deceleration": TURN_DECELERATION,
             "max_laps": max_laps,
             "max_steps": max_steps,
             "l3_mde_model": "Depth-Anything-V2-Small-hf",
@@ -245,7 +253,11 @@ if __name__ == "__main__":
     mde_model = L3PLayerDepthAnythingv2(l3_config=l3_mde_config, device="cuda")
     path_follower = StraightLineLapFollower(
         straight_speed=args.path_speed,
+        linear_acceleration=args.path_acceleration,
+        linear_deceleration=args.path_deceleration,
         endpoint_turn_speed=args.endpoint_turn_speed,
+        angular_acceleration=TURN_ACCELERATION,
+        angular_deceleration=TURN_DECELERATION,
         endpoint_distance=args.endpoint_distance,
         position_threshold=POSITION_THRESHOLD,
         heading_threshold=HEADING_THRESHOLD,
