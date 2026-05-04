@@ -714,13 +714,17 @@ class BaseScene(metaclass=ABCMeta):
         # sun_xf.AddRotateXYZOp().Set(Gf.Vec3f(-50, 20, 0))
         sun_xf.AddTranslateOp().Set(Gf.Vec3f(*sun_ori_position))
         for prim in self.world.stage.Traverse():
-            if not bool(UsdLux.DistantLight(prim)):
+            if not bool(UsdLux.Light(prim)):
                 continue
             if not prim == "/World/ExtraSun":
-                light = UsdLux.DistantLight(prim)
+                light = UsdLux.Light(prim)
                 intensity_attr = light.GetIntensityAttr()
-                intensity_attr.Set(0.0)
+                if not intensity_attr:
+                    intensity_attr = light.CreateIntensityAttr()
                 exposure_attr = light.GetExposureAttr()
+                if not exposure_attr:
+                    exposure_attr = light.CreateExposureAttr()
+                intensity_attr.Set(0.0)
                 exposure_attr.Set(0.0)
         
         # --- Verify ---
