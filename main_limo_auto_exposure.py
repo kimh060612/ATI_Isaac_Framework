@@ -319,6 +319,7 @@ if __name__ == "__main__":
         "depth": [],
         "bbox": [],
         "pred_depth": [],
+        "imu": [],
     }
     log_param_history = []
     log_reward_history = []
@@ -447,6 +448,7 @@ if __name__ == "__main__":
                     "depth": [],
                     "bbox": [],
                     "pred_depth": [],
+                    "imu": [],
                 }
                 log_reward_history = []
                 log_performance_history = []
