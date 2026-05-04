@@ -698,3 +698,114 @@ class FixedWayPointFollower:
             linear_velocity=float(linear_velocity),
             angular_velocity=angular_velocity,
         )
+
+
+class StraightLineLapFollower:
+    """
+    Follower for a fixed straight out-and-back lap.
+
+    One lap is:
+      (0, 0) -> (1, 0), rotate 180 deg,
+      (1, 0) -> (-1, 0), rotate 180 deg,
+      (-1, 0) -> (0, 0).
+    """
+
+    def __init__(
+        self,
+        straight_speed: float = 0.6,
+        endpoint_turn_speed: float = 0.8,
+        endpoint_distance: float = 1.0,
+        position_threshold: float = 0.04,
+        heading_threshold: float = 0.04,
+        heading_gain: float = 2.5,
+        max_heading_correction: float | None = None,
+        forward_angle_threshold: float = np.pi / 3.0,
+        recovery_speed: float = 0.15,
+    ):
+        self.straight_speed = max(0.0, float(straight_speed))
+        self.endpoint_turn_speed = max(0.0, float(endpoint_turn_speed))
+        self.endpoint_distance = max(0.0, float(endpoint_distance))
+        self.position_threshold = max(0.0, float(position_threshold))
+        self.heading_threshold = max(0.0, float(heading_threshold))
+        self.heading_gain = float(heading_gain)
+        self.max_heading_correction = (
+            self.endpoint_turn_speed
+            if max_heading_correction is None
+            else max(0.0, float(max_heading_correction))
+        )
+        self.forward_angle_threshold = float(np.clip(forward_angle_threshold, 0.0, np.pi))
+        self.recovery_speed = max(0.0, float(recovery_speed))
+        self.phase_index = 0
+        self.lap_count = 0
+        self.phase_names = (
+            "drive_to_positive_x",
+            "turn_to_negative_x",
+            "drive_to_negative_x",
+            "turn_to_positive_x",
+            "drive_to_origin",
+        )
+
+    @staticmethod
+    def _wrap_angle(angle: float) -> float:
+        return float(np.arctan2(np.sin(angle), np.cos(angle)))
+
+    def reset(self) -> None:
+        self.phase_index = 0
+        self.lap_count = 0
+
+    @property
+    def phase_name(self) -> str:
+        return self.phase_names[self.phase_index]
+
+    def _advance_phase(self) -> None:
+        self.phase_index += 1
+        if self.phase_index >= len(self.phase_names):
+            self.phase_index = 0
+            self.lap_count += 1
+
+    def _turn_command(self, current_pose: Pose2D, target_heading: float, step_dt: float | None) -> VelocityCommand:
+        heading_error = self._wrap_angle(target_heading - current_pose.theta)
+        if abs(heading_error) <= self.heading_threshold:
+            self._advance_phase()
+            return VelocityCommand(linear_velocity=0.0, angular_velocity=0.0)
+
+        angular_velocity = np.sign(heading_error) * self.endpoint_turn_speed
+        if step_dt is not None and step_dt > 0.0:
+            angular_velocity = np.sign(heading_error) * min(abs(angular_velocity), abs(heading_error) / step_dt)
+        return VelocityCommand(linear_velocity=0.0, angular_velocity=float(angular_velocity))
+
+    def _drive_command(self, current_pose: Pose2D, target: np.ndarray) -> VelocityCommand:
+        robot_point = np.array([current_pose.x, current_pose.y], dtype=float)
+        target_vec = target - robot_point
+        distance = float(np.linalg.norm(target_vec))
+        if distance <= self.position_threshold:
+            self._advance_phase()
+            return VelocityCommand(linear_velocity=0.0, angular_velocity=0.0)
+
+        target_heading = float(np.arctan2(target_vec[1], target_vec[0]))
+        heading_error = self._wrap_angle(target_heading - current_pose.theta)
+        angular_velocity = float(np.clip(
+            self.heading_gain * heading_error,
+            -self.max_heading_correction,
+            self.max_heading_correction,
+        ))
+
+        linear_velocity = self.straight_speed
+        if abs(heading_error) > self.forward_angle_threshold:
+            linear_velocity = min(linear_velocity, self.recovery_speed)
+        return VelocityCommand(linear_velocity=float(linear_velocity), angular_velocity=angular_velocity)
+
+    def step(self, current_pose: Pose2D, step_dt: float | None = None) -> VelocityCommand:
+        positive_endpoint = np.array([self.endpoint_distance, 0.0], dtype=float)
+        negative_endpoint = np.array([-self.endpoint_distance, 0.0], dtype=float)
+        origin = np.array([0.0, 0.0], dtype=float)
+
+        if self.phase_name == "drive_to_positive_x":
+            return self._drive_command(current_pose, positive_endpoint)
+        if self.phase_name == "turn_to_negative_x":
+            return self._turn_command(current_pose, np.pi, step_dt)
+        if self.phase_name == "drive_to_negative_x":
+            return self._drive_command(current_pose, negative_endpoint)
+        if self.phase_name == "turn_to_positive_x":
+            return self._turn_command(current_pose, 0.0, step_dt)
+        return self._drive_command(current_pose, origin)

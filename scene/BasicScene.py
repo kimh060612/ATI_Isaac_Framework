@@ -667,11 +667,12 @@ class BaseScene(metaclass=ABCMeta):
             kwargs["wheel_dof_names"] = ["axle_0_joint", "axle_1_joint", "axle_2_joint"]
         elif self.robot_config.robot_name == "limo":
             kwargs["wheel_joint_names"] = [*self.robot_config.front_jointNames, *self.robot_config.rear_jointNames]
+        initial_pos = self.config.agent_origin_position
         self.agent = self._define_robot_agent(
             robot_type=self.robot_config.robot_name,
             robot_name="my_agent",
             robot_usd_path=robot_usd_path,
-            initial_position=np.array([0.0, 0.0, 0.02]), # -3.0, -3.0
+            initial_position=np.array(initial_pos), # -3.0, -3.0
             initial_orientation=np.array([1.0, 0.0, 0.0, 0.0]),
             **kwargs
         )
