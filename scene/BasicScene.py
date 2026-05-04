@@ -100,7 +100,7 @@ class BaseScene(metaclass=ABCMeta):
         self._num_frame_steps = 0
         self._num_steps = 0
         self.__reset_needed = False
-        self.__warmup_steps = 20
+        self.__warmup_steps = 60
         self._camera_capture_start_time = 0.0
         self._pt_external_frame_counter = 0
         

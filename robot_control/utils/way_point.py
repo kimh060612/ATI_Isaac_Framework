@@ -796,7 +796,7 @@ class StraightLineLapFollower:
 
     def _turn_command(self, current_pose: Pose2D, target_heading: float, step_dt: float | None) -> VelocityCommand:
         heading_error = self._wrap_angle(target_heading - current_pose.theta)
-        heading_epsilon = 1e-6
+        heading_epsilon = 5e-3
         if (
             abs(heading_error) <= heading_epsilon
             or (
@@ -837,7 +837,7 @@ class StraightLineLapFollower:
         target_vec = target - robot_point
         signed_remaining = float(np.dot(target_vec, tangent_unit))
         distance_to_target = float(np.linalg.norm(target_vec))
-        position_epsilon = 1e-6
+        position_epsilon = 1e-4
         if (
             signed_remaining <= position_epsilon
             or (
