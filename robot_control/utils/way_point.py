@@ -796,7 +796,7 @@ class StraightLineLapFollower:
 
     def _turn_command(self, current_pose: Pose2D, target_heading: float, step_dt: float | None) -> VelocityCommand:
         heading_error = self._wrap_angle(target_heading - current_pose.theta)
-        heading_epsilon = 5e-3
+        heading_epsilon = 1e-2
         if (
             abs(heading_error) <= heading_epsilon
             or (
