@@ -120,6 +120,7 @@ class BaseScene(metaclass=ABCMeta):
         self.external_cameras = config.external_cameras
         self.single_object_usd_paths = config.single_object_usd_paths
         self.props_object_usd_paths = config.props_object_usd_paths
+        self.indoor_light_paths = []
         self.wheel_indices = None
         
         random.seed(seed)
@@ -331,9 +332,29 @@ class BaseScene(metaclass=ABCMeta):
     
     
     def control_light_intensity(self, intensity):
-        sun_prim = self.world.stage.GetPrimAtPath("/World/ExtraSun")
-        sun = UsdLux.DistantLight(sun_prim)
-        sun.GetIntensityAttr().Set(intensity)
+        # Previous outdoor-style light control kept for reference.
+        # sun_prim = self.world.stage.GetPrimAtPath("/World/ExtraSun")
+        # sun = UsdLux.DistantLight(sun_prim)
+        # sun.GetIntensityAttr().Set(intensity)
+
+        light_paths = list(getattr(self, "indoor_light_paths", []))
+        if not light_paths:
+            light_paths = [
+                prim.GetPath().pathString
+                for prim in self.world.stage.Traverse()
+                if prim.GetPath().pathString.startswith("/World/IndoorLights/")
+                and bool(UsdLux.LightAPI(prim))
+            ]
+
+        for light_path in light_paths:
+            light_prim = self.world.stage.GetPrimAtPath(light_path)
+            if not light_prim.IsValid():
+                continue
+            light = UsdLux.LightAPI(light_prim)
+            intensity_attr = light.GetIntensityAttr()
+            if not intensity_attr:
+                intensity_attr = light.CreateIntensityAttr()
+            intensity_attr.Set(float(intensity))
     
     def __check_valid_synthetic_data(self, data: dict):
         if not data:
@@ -706,26 +727,97 @@ class BaseScene(metaclass=ABCMeta):
             self._modify_external_camera(cam_prim_path, cam_position, cam_t_position)
         
         # --- Extra sun light ---: Things to modify for the lighting variations
-        sun_ori_position = self.config.extra_light_position
-        sun = UsdLux.DistantLight.Define(self.world.stage, "/World/ExtraSun")
-        sun.CreateIntensityAttr(3000) # Need to check the unit of this parameter and the range of it.
-        sun.CreateAngleAttr(1.0)
-        sun_xf = UsdGeom.Xformable(sun.GetPrim())
-        # sun_xf.AddRotateXYZOp().Set(Gf.Vec3f(-50, 20, 0))
-        sun_xf.AddTranslateOp().Set(Gf.Vec3f(*sun_ori_position))
+        # sun_ori_position = self.config.extra_light_position
+        # sun = UsdLux.DistantLight.Define(self.world.stage, "/World/ExtraSun")
+        # sun.CreateIntensityAttr(3000) # Need to check the unit of this parameter and the range of it.
+        # sun.CreateAngleAttr(1.0)
+        # sun_xf = UsdGeom.Xformable(sun.GetPrim())
+        # # sun_xf.AddRotateXYZOp().Set(Gf.Vec3f(-50, 20, 0))
+        # sun_xf.AddTranslateOp().Set(Gf.Vec3f(*sun_ori_position))
+        # for prim in self.world.stage.Traverse():
+        #     if not bool(UsdLux.LightAPI(prim)):
+        #         continue
+        #     if not prim == "/World/ExtraSun":
+        #         light = UsdLux.LightAPI(prim)
+        #         intensity_attr = light.GetIntensityAttr()
+        #         if not intensity_attr:
+        #             intensity_attr = light.CreateIntensityAttr()
+        #         exposure_attr = light.GetExposureAttr()
+        #         if not exposure_attr:
+        #             exposure_attr = light.CreateExposureAttr()
+        #         intensity_attr.Set(0.0)
+        #         exposure_attr.Set(0.0)
+
+        # --- Indoor ceiling lights ---: RectLight panels are more suitable for consistent indoor lighting.
+        indoor_light_root_path = "/World/IndoorLights"
+        UsdGeom.Xform.Define(self.world.stage, indoor_light_root_path)
+        indoor_light_center = self.config.extra_light_position
+        indoor_light_height = float(indoor_light_center[2])
+        indoor_light_offsets = [
+            (-2.0, -2.0, indoor_light_height),
+            (2.0, -2.0, indoor_light_height),
+            (-2.0, 2.0, indoor_light_height),
+            (2.0, 2.0, indoor_light_height),
+        ]
+        self.indoor_light_paths = []
+        for idx, light_position in enumerate(indoor_light_offsets):
+            light_path = f"{indoor_light_root_path}/CeilingPanel_{idx}"
+            panel_light = UsdLux.RectLight.Define(self.world.stage, light_path)
+            panel_prim = panel_light.GetPrim()
+            self.indoor_light_paths.append(light_path)
+
+            intensity_attr = panel_light.GetIntensityAttr()
+            if not intensity_attr:
+                intensity_attr = panel_light.CreateIntensityAttr()
+            intensity_attr.Set(3000.0)
+
+            exposure_attr = panel_light.GetExposureAttr()
+            if not exposure_attr:
+                exposure_attr = panel_light.CreateExposureAttr()
+            exposure_attr.Set(0.0)
+
+            color_attr = panel_light.GetColorAttr()
+            if not color_attr:
+                color_attr = panel_light.CreateColorAttr()
+            color_attr.Set(Gf.Vec3f(1.0, 1.0, 1.0))
+
+            width_attr = panel_light.GetWidthAttr()
+            if not width_attr:
+                width_attr = panel_light.CreateWidthAttr()
+            width_attr.Set(2.0)
+
+            height_attr = panel_light.GetHeightAttr()
+            if not height_attr:
+                height_attr = panel_light.CreateHeightAttr()
+            height_attr.Set(1.2)
+
+            translate_attr = panel_prim.GetAttribute("xformOp:translate")
+            if translate_attr:
+                translate_attr.Set(Gf.Vec3f(*light_position))
+            else:
+                UsdGeom.Xformable(panel_prim).AddTranslateOp().Set(Gf.Vec3f(*light_position))
+
+            rotate_attr = panel_prim.GetAttribute("xformOp:rotateXYZ")
+            if rotate_attr:
+                rotate_attr.Set(Gf.Vec3f(0.0, 0.0, 0.0))
+            else:
+                UsdGeom.Xformable(panel_prim).AddRotateXYZOp().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+
         for prim in self.world.stage.Traverse():
             if not bool(UsdLux.LightAPI(prim)):
                 continue
-            if not prim == "/World/ExtraSun":
-                light = UsdLux.LightAPI(prim)
-                intensity_attr = light.GetIntensityAttr()
-                if not intensity_attr:
-                    intensity_attr = light.CreateIntensityAttr()
-                exposure_attr = light.GetExposureAttr()
-                if not exposure_attr:
-                    exposure_attr = light.CreateExposureAttr()
-                intensity_attr.Set(0.0)
-                exposure_attr.Set(0.0)
+            prim_path = prim.GetPath().pathString
+            if prim_path.startswith(f"{indoor_light_root_path}/"):
+                continue
+            light = UsdLux.LightAPI(prim)
+            intensity_attr = light.GetIntensityAttr()
+            if not intensity_attr:
+                intensity_attr = light.CreateIntensityAttr()
+            exposure_attr = light.GetExposureAttr()
+            if not exposure_attr:
+                exposure_attr = light.CreateExposureAttr()
+            intensity_attr.Set(0.0)
+            exposure_attr.Set(0.0)
         
         # --- Verify ---
         for path in ["/World/Environment", "/World/Agent", "/World/OverheadCam", self.agent_camera_prim_path]:
