@@ -32,6 +32,42 @@ def _ease_01(ratio: float, easing: EaseMode) -> float:
         return 0.5 - 0.5 * cos(pi * x)
     raise ValueError(f"Unsupported easing mode: {easing}")
 
+@dataclass(slots=True)
+class StepTrajectory:
+    """
+    Traverses anchor values in a stepwise pattern.
+
+    Example:
+        [200, 1000, 3000, 6000, 9000]
+        -> 200 -> 1000 -> 3000 -> 6000 -> 9000 -> repeat
+    Each value is held for hold_steps before jumping to the next value.
+    """
+    anchor_values: Sequence[float]
+    hold_steps: int
+    phase_offset_steps: int = 0
+    _cycle_values: tuple[float, ...] = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        self._cycle_values = _validate_anchor_values(self.anchor_values)
+        if self.hold_steps < 0:
+            raise ValueError("hold_steps must be zero or a positive integer.")
+
+    @property
+    def num_segments(self) -> int:
+        return len(self._cycle_values)
+
+    @property
+    def cycle_steps(self) -> int:
+        return self.num_segments * self.hold_steps
+
+    def value_at(self, step: int) -> float:
+        if step < 0:
+            raise ValueError("step must be zero or a positive integer.")
+
+        shifted_step = (int(step) + int(self.phase_offset_steps)) % self.cycle_steps
+        segment_idx = shifted_step // self.hold_steps
+        return float(self._cycle_values[segment_idx])
+
 
 @dataclass(slots=True)
 class PingPongTrajectory:
@@ -120,6 +156,31 @@ class ContextTrajectory:
             "angular_velocity": self.speed_trajectory.value_at(step) * float(self.speed_scale),
         }
 
+
+def build_step_context_trajectory(
+    light_values: Sequence[float],
+    speed_values: Sequence[float],
+    *,
+    light_hold_steps: int = 30,
+    speed_hold_steps: int = 15,
+    speed_phase_offset_steps: int = 0,
+) -> ContextTrajectory:
+    light_trajectory = StepTrajectory(
+        anchor_values=light_values,
+        hold_steps=light_hold_steps,
+        phase_offset_steps=0,
+    )
+    speed_trajectory = StepTrajectory(
+        anchor_values=speed_values,
+        hold_steps=speed_hold_steps,
+        phase_offset_steps=speed_phase_offset_steps,
+    )
+    return ContextTrajectory(
+        light_trajectory=light_trajectory,
+        speed_trajectory=speed_trajectory,
+        speed_scale=1.0,
+    )
+    
 
 def build_default_context_trajectory(
     light_values: Sequence[float],
@@ -225,20 +286,27 @@ def plot_context_trajectory(
 if __name__ == "__main__":
     LAP_PERIOD = 30
     import numpy as np
-    speed_vals = [1.0, 2.0, 1.0, 2.0, 1.0]
-    light_vals = [500, 6000, 500, 6000, 500]
-    trajectory = build_default_context_trajectory(
+    speed_vals = [1.0, 1.0, 1.0, 1.0, 1.0]# [1.0, 2.0, 1.0, 2.0, 1.0]
+    light_vals = [500, 6000]
+    step_trajectory = build_step_context_trajectory(
         light_values=light_vals,
         speed_values=[s * np.pi / 12 for s in speed_vals],
-        light_transition_steps=LAP_PERIOD * 200,
-        speed_transition_steps=LAP_PERIOD * 10,
         light_hold_steps=LAP_PERIOD,
         speed_hold_steps=LAP_PERIOD,
-        speed_phase_offset_steps=LAP_PERIOD,
+        speed_phase_offset_steps=0,
     )
+    # trajectory = build_default_context_trajectory(
+    #     light_values=light_vals,
+    #     speed_values=[s * np.pi / 12 for s in speed_vals],
+    #     light_transition_steps=LAP_PERIOD * 200,
+    #     speed_transition_steps=LAP_PERIOD * 10,
+    #     light_hold_steps=LAP_PERIOD,
+    #     speed_hold_steps=LAP_PERIOD,
+    #     speed_phase_offset_steps=LAP_PERIOD,
+    # )
     plot_context_trajectory(
-        trajectory=trajectory,
-        num_steps=LAP_PERIOD * 250,
-        sampling_period=30,
+        trajectory=step_trajectory,
+        num_steps=LAP_PERIOD * 20,
+        sampling_period=1,
         save_path="./context_trajectories.png",
     )
