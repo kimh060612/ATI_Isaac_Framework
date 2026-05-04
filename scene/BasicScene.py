@@ -706,11 +706,13 @@ class BaseScene(metaclass=ABCMeta):
             self._modify_external_camera(cam_prim_path, cam_position, cam_t_position)
         
         # --- Extra sun light ---: Things to modify for the lighting variations
+        sun_ori_position = self.config.extra_light_position
         sun = UsdLux.DistantLight.Define(self.world.stage, "/World/ExtraSun")
         sun.CreateIntensityAttr(3000) # Need to check the unit of this parameter and the range of it.
         sun.CreateAngleAttr(1.0)
         sun_xf = UsdGeom.Xformable(sun.GetPrim())
-        sun_xf.AddRotateXYZOp().Set(Gf.Vec3f(-50, 20, 0))
+        # sun_xf.AddRotateXYZOp().Set(Gf.Vec3f(-50, 20, 0))
+        sun_xf.AddTranslateOp().Set(Gf.Vec3f(*sun_ori_position))
         
         # --- Verify ---
         for path in ["/World/Environment", "/World/Agent", "/World/OverheadCam", self.agent_camera_prim_path]:
