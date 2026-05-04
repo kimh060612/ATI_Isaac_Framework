@@ -713,6 +713,15 @@ class BaseScene(metaclass=ABCMeta):
         sun_xf = UsdGeom.Xformable(sun.GetPrim())
         # sun_xf.AddRotateXYZOp().Set(Gf.Vec3f(-50, 20, 0))
         sun_xf.AddTranslateOp().Set(Gf.Vec3f(*sun_ori_position))
+        for prim in self.world.stage.Traverse():
+            if not bool(UsdLux.DistantLight(prim)):
+                continue
+            if not prim == "/World/ExtraSun":
+                light = UsdLux.DistantLight(prim)
+                intensity_attr = light.GetIntensityAttr()
+                intensity_attr.Set(0.0)
+                exposure_attr = light.GetExposureAttr()
+                exposure_attr.Set(0.0)
         
         # --- Verify ---
         for path in ["/World/Environment", "/World/Agent", "/World/OverheadCam", self.agent_camera_prim_path]:
