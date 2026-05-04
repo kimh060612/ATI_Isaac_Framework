@@ -41,7 +41,7 @@ class ATIBaseConfig:
     min_distance_from_agent: float = 3.0 # Minimum distance from the agent for randomly spawned objects
     robot_config: ATIBaseRobotConfig
     camera_controller: str = "exposure_iso_controller"
-    extra_light_position = (0.0, 0.0, 2.5)
+    extra_light_position = (0.0, 0.0, 2.0)
     
     single_object_usd_paths: List[Tuple[str, int]] = [] # field(default_factory=list)
     props_object_usd_paths: List[Tuple[str, int]] = [] # field(default_factory=list)
