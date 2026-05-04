@@ -270,13 +270,12 @@ if __name__ == "__main__":
     step = 0
     lap_idx = 0
     syn_data_cache = make_syn_data_cache()
-    wandb_run = None
-    # initialize_wandb(
-    #     context_len=CHANGE_CONTEXT_EVERY,
-    #     max_laps=MAX_LAPS,
-    #     max_steps=MAX_STEPS,
-    #     exp_name=f"ati_limo_depthany_{l3_mde_config.reward_type}_{args.exp_name}",
-    # )
+    wandb_run = initialize_wandb(
+        context_len=CHANGE_CONTEXT_EVERY,
+        max_laps=MAX_LAPS,
+        max_steps=MAX_STEPS,
+        exp_name=f"ati_limo_depthany_{l3_mde_config.reward_type}_{args.exp_name}",
+    )
     log_context_history = []
     log_reward_history = []
     log_performance_history = []
