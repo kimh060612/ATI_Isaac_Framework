@@ -154,7 +154,7 @@ if __name__ == "__main__":
     context_agent_speed = [1.0, 1.0, 1.0, 1.0, 1.0]
     # [0.2, 0.5, 1.0, 1.5, 2.0]  # Example speed values for the agent's context
     trajectory = build_step_context_trajectory(
-        light_values=[500, 3000],
+        light_values=[9000, 500],
         speed_values=[s * RAD_COEFF for s in context_agent_speed],
         light_hold_steps=args.lap_period * 10,
         speed_hold_steps=args.lap_period,
