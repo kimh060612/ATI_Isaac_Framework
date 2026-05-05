@@ -199,7 +199,7 @@ if __name__ == "__main__":
         light_values=[1000, 1000, 1000, 1000, 1000],
         speed_values=[s * RAD_COEFF for s in context_agent_speed],
         light_transition_steps=args.lap_period * 20,
-        speed_transition_steps=args.lap_period * 10,
+        speed_transition_steps=args.lap_period * 5,
         light_hold_steps=args.lap_period,
         speed_hold_steps=args.lap_period,
         speed_phase_offset_steps=args.lap_period,
@@ -370,7 +370,7 @@ if __name__ == "__main__":
                     commit=True,
                 )
                 
-                context = trajectory.value_at(lap_idx)
+                context = trajectory.value_at(step + 1)
                 curr_light = context["light_intensity"]
                 curr_speed = context["angular_velocity"]
                 my_scene.control_light_intensity(curr_light)

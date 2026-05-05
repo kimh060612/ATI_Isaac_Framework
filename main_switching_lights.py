@@ -17,9 +17,9 @@ CONFIG = {
 simulation_app = SimulationApp(launch_config=CONFIG)
 
 # Enable Livestream extension
-from isaacsim.core.utils.extensions import enable_extension
-simulation_app.set_setting("/app/window/drawMouse", True)
-enable_extension("omni.services.livestream.nvcf")
+# from isaacsim.core.utils.extensions import enable_extension
+# simulation_app.set_setting("/app/window/drawMouse", True)
+# enable_extension("omni.services.livestream.nvcf")
 
 # Scene Building
 from ati_utils.log_utils import configure_isaac_sim_logging, save_synthetic_data, get_eval_averages
