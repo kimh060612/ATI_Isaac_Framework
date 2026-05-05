@@ -231,6 +231,24 @@ if __name__ == "__main__":
     curr_exposure_idx = len(sensor_param_space.exposure_values) // 2
     curr_iso_idx = len(sensor_param_space.iso_values) // 2
 
+    initial_policy_result = l2_policy.step(
+        context_information={
+            "light_intensity": curr_light,
+            "angular_velocity": curr_motion_context,
+            "iso_idx": curr_iso_idx,
+            "exposure_idx": curr_exposure_idx,
+            "tie_break_random": True,
+            "skip_update": True,
+            "store_pending": WARMUP_LAPS == 0,
+        },
+        observations={
+            "reward_info_override": get_avg_aggregation([]),
+        },
+    )
+    curr_exposure_idx = initial_policy_result["next_exposure_idx"]
+    curr_iso_idx = initial_policy_result["next_iso_idx"]
+    current_lap_policy_result = initial_policy_result
+
     my_scene.control_light_intensity(curr_light)
     my_scene.sensor_control(
         control_parameters={
@@ -349,67 +367,97 @@ if __name__ == "__main__":
             log_performance_history.append(metric_info)
 
             if (step + 1) % CHANGE_CONTEXT_EVERY == 0:
+                completed_light = curr_light
+                completed_motion_context = curr_motion_context
+                completed_iso_idx = curr_iso_idx
+                completed_exposure_idx = curr_exposure_idx
+                completed_policy_result = current_lap_policy_result
                 motion_summary = average_motion_history(log_motion_history)
                 completed_path_in_lap = path_follower.lap_count > route_lap_count_at_lap_start
-                curr_motion_context = max(
-                    motion_summary["linear_velocity"], 
-                    motion_summary["abs_angular_velocity"]
-                ) 
-                is_warmup_lap = lap_idx < WARMUP_LAPS
+                completed_lap_is_warmup = lap_idx < WARMUP_LAPS
+                next_lap_idx = lap_idx + 1
+                has_next_lap = next_lap_idx < MAX_LAPS
+                next_step = step + 1
+                next_context = trajectory.value_at(next_step)
+                next_motion_context = next_context["angular_velocity"]
+                next_lap_is_warmup = next_lap_idx < WARMUP_LAPS
 
                 result = l2_policy.step(
                     context_information={
-                        "light_intensity": curr_light,
-                        "angular_velocity": curr_motion_context,
+                        "light_intensity": next_context["light_intensity"],
+                        "angular_velocity": next_motion_context,
                         "iso_idx": curr_iso_idx,
                         "exposure_idx": curr_exposure_idx,
-                        "tie_break_random": False,
-                        "skip_update": is_warmup_lap,
+                        "tie_break_random": True,
+                        "skip_update": completed_lap_is_warmup,
+                        "store_pending": has_next_lap and not next_lap_is_warmup,
                     },
                     observations={
                         "reward_info_override": get_avg_aggregation(log_reward_history),
                     },
                 )
+                update_info = result.get("update_info")
                 if DEBUG:
                     print("[DEBUG]Policy Step Reward Result:", result["reward_info"])
-                curr_exposure_idx = result["next_exposure_idx"]
-                curr_iso_idx = result["next_iso_idx"]
-                log_context_history.append({
-                    "iso_idx": curr_iso_idx,
-                    "exposure_idx": curr_exposure_idx,
-                })
 
-                if DEBUG:
-                    print("[DEBUG] Sensor Control Action Taken - Exposure Index:", curr_exposure_idx, "ISO Index:", curr_iso_idx)
-                my_scene.sensor_control(
-                    control_parameters={
-                        "iso": sensor_param_space.iso_values[curr_iso_idx],
-                        "shutter_time": sensor_param_space.exposure_values[curr_exposure_idx],
-                    }
-                )
-
-                if not is_warmup_lap and wandb_run is not None:
+                if not completed_lap_is_warmup and wandb_run is not None:
                     wandb_run.log(
                         {
-                            "context/light_intensity": curr_light,
-                            "context/agent_speed": motion_summary["linear_velocity"],
+                            "context/light_intensity": completed_light,
+                            "context/agent_speed": completed_motion_context,
+                            "context/observed_linear_velocity": motion_summary["linear_velocity"],
                             "context/angular_velocity": motion_summary["angular_velocity"],
                             "context/abs_angular_velocity": motion_summary["abs_angular_velocity"],
                             "context/path_id": motion_summary["path_id"],
                             "context/path_completed": float(completed_path_in_lap),
-                            "context/iso_idx": curr_iso_idx,
-                            "context/exposure_idx": curr_exposure_idx,
+                            "context/iso_idx": completed_iso_idx,
+                            "context/exposure_idx": completed_exposure_idx,
+                            **({
+                                "policy/action_delta_exposure": float(completed_policy_result["action"][0]),
+                                "policy/action_delta_iso": float(completed_policy_result["action"][1]),
+                                "policy/chosen_score": float(completed_policy_result["chosen_score"]),
+                                "policy/chosen_mean": float(completed_policy_result["chosen_mean"]),
+                                "policy/chosen_bonus": float(completed_policy_result["chosen_bonus"]),
+                            } if completed_policy_result is not None else {}),
+                            **({
+                                "policy/update_reward": float(update_info["reward"]),
+                                "policy/update_action_delta_exposure": float(update_info["action"][0]),
+                                "policy/update_action_delta_iso": float(update_info["action"][1]),
+                            } if update_info is not None else {}),
+                            **({
+                                "policy/next_light_intensity": float(next_context["light_intensity"]),
+                                "policy/next_agent_speed": float(next_motion_context),
+                                "policy/next_iso_idx": float(result["next_iso_idx"]),
+                                "policy/next_exposure_idx": float(result["next_exposure_idx"]),
+                            } if has_next_lap else {}),
                             **get_eval_averages(log_reward_history, key_category="reward"),
                             **get_eval_averages(log_performance_history, key_category="performance"),
                         },
                         step=lap_idx - WARMUP_LAPS,
                         commit=True,
                     )
-                save_synthetic_data(DATA_PATH, syn_data_cache, lap_idx - WARMUP_LAPS)
+                    save_synthetic_data(DATA_PATH, syn_data_cache, lap_idx - WARMUP_LAPS)
 
-                context = trajectory.value_at(step + 1)
-                curr_light = context["light_intensity"]
-                my_scene.control_light_intensity(curr_light)
+                if has_next_lap:
+                    curr_light = next_context["light_intensity"]
+                    curr_motion_context = next_motion_context
+                    curr_exposure_idx = result["next_exposure_idx"]
+                    curr_iso_idx = result["next_iso_idx"]
+                    current_lap_policy_result = result
+                    log_context_history.append({
+                        "iso_idx": curr_iso_idx,
+                        "exposure_idx": curr_exposure_idx,
+                    })
+
+                    if DEBUG:
+                        print("[DEBUG] Sensor Control Action Taken - Exposure Index:", curr_exposure_idx, "ISO Index:", curr_iso_idx)
+                    my_scene.control_light_intensity(curr_light)
+                    my_scene.sensor_control(
+                        control_parameters={
+                            "iso": sensor_param_space.iso_values[curr_iso_idx],
+                            "shutter_time": sensor_param_space.exposure_values[curr_exposure_idx],
+                        }
+                    )
 
                 syn_data_cache = make_syn_data_cache()
                 log_reward_history = []
@@ -418,7 +466,7 @@ if __name__ == "__main__":
                 lap_idx += 1
                 route_lap_count_at_lap_start = path_follower.lap_count
                 if VERBOSE:
-                    lap_mode = "warmup" if is_warmup_lap else "linucb"
+                    lap_mode = "warmup" if completed_lap_is_warmup else "linucb"
                     print(
                         f"Fixed-step lap {lap_idx}/{MAX_LAPS} completed at step {step + 1} ({lap_mode}). "
                         f"Path completed: {completed_path_in_lap}. "

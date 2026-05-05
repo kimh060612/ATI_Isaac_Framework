@@ -208,6 +208,7 @@ class L2SharedLinUCBRGBCamPolicy(BaseCMABPolicy):
 
         update_info = None
         skip_update = bool(context_information.get("skip_update", False))
+        store_pending = bool(context_information.get("store_pending", not skip_update))
         if (not skip_update) and self.pending_update is not None:
             update_info = self.update_parameters(
                 self.pending_update["z"],
@@ -230,11 +231,13 @@ class L2SharedLinUCBRGBCamPolicy(BaseCMABPolicy):
         next_exposure_value = self.cfg.exposure_values[next_e_idx]
         next_iso_value = self.cfg.iso_values[next_i_idx]
 
-        if not skip_update:
+        if store_pending:
             self.pending_update = {
                 "z": z.copy(),
                 "action": action,
             }
+        else:
+            self.pending_update = None
 
         record = {
             "angular_velocity": context_information["angular_velocity"],
@@ -481,6 +484,7 @@ class L2DisjointLinUCBRGBCamPolicy(BaseCMABPolicy):
 
         update_info = None
         skip_update = bool(context_information.get("skip_update", False))
+        store_pending = bool(context_information.get("store_pending", not skip_update))
         if (not skip_update) and self.pending_update is not None:
             update_info = self.update_parameters(
                 self.pending_update["z"],
@@ -503,11 +507,13 @@ class L2DisjointLinUCBRGBCamPolicy(BaseCMABPolicy):
         next_exposure_value = self.cfg.exposure_values[next_e_idx]
         next_iso_value = self.cfg.iso_values[next_i_idx]
 
-        if not skip_update:
+        if store_pending:
             self.pending_update = {
                 "z": z.copy(),
                 "action": action,
             }
+        else:
+            self.pending_update = None
 
         record = {
             "angular_velocity": context_information["angular_velocity"],

@@ -178,6 +178,24 @@ if __name__ == "__main__":
     curr_iso_idx = len(sensor_param_space.iso_values) // 2
     # curr_light = context_light[len(context_light) // 2]
     # curr_speed = context_agent_speed[len(context_agent_speed) // 2] * np.pi / 12
+    initial_policy_result = l2_policy.step(
+        context_information={
+            "light_intensity": curr_light,
+            "angular_velocity": curr_speed,
+            "iso_idx": curr_iso_idx,
+            "exposure_idx": curr_exposure_idx,
+            "tie_break_random": True,
+            "skip_update": True,
+            "store_pending": True,
+        },
+        observations={
+            "reward_info_override": get_avg_aggregation([]),
+        },
+    )
+    curr_exposure_idx = initial_policy_result["next_exposure_idx"]
+    curr_iso_idx = initial_policy_result["next_iso_idx"]
+    current_lap_policy_result = initial_policy_result
+
     ## Initial Sensor Control
     my_scene.control_light_intensity(curr_light) # Set initial light intensity
     my_scene.sensor_control(
@@ -265,55 +283,84 @@ if __name__ == "__main__":
             log_performance_history.append(metric_info)
 
             if (step + 1) % CHANGE_CONTEXT_EVERY == 0 and step > 0:
+                completed_light = curr_light
+                completed_speed = curr_speed
+                completed_iso_idx = curr_iso_idx
+                completed_exposure_idx = curr_exposure_idx
+                completed_policy_result = current_lap_policy_result
+                lap_reward_info = get_avg_aggregation(log_reward_history)
+                next_lap_idx = lap_idx + 1
+                has_next_lap = next_lap_idx < MAX_LAPS
+                next_step = step + 1
+                next_context = trajectory.value_at(next_step)
+                result = l2_policy.step(
+                    context_information={
+                        "light_intensity": next_context["light_intensity"],
+                        "angular_velocity": next_context["angular_velocity"],
+                        "iso_idx": curr_iso_idx,
+                        "exposure_idx": curr_exposure_idx,
+                        "tie_break_random": True,
+                        "store_pending": has_next_lap,
+                    },
+                    observations={
+                        "reward_info_override": lap_reward_info,
+                    }
+                )
+                update_info = result.get("update_info")
                 # **get_eval_averages(log_context_history, key_category="context"),
                 wandb_run.log(
                     {
-                        "context/light_intensity": curr_light,
-                        "context/agent_speed": curr_speed,
-                        "context/iso_idx": curr_iso_idx,
-                        "context/exposure_idx": curr_exposure_idx,
+                        "context/light_intensity": completed_light,
+                        "context/agent_speed": completed_speed,
+                        "context/iso_idx": completed_iso_idx,
+                        "context/exposure_idx": completed_exposure_idx,
+                        **({
+                            "policy/action_delta_exposure": float(completed_policy_result["action"][0]),
+                            "policy/action_delta_iso": float(completed_policy_result["action"][1]),
+                            "policy/chosen_score": float(completed_policy_result["chosen_score"]),
+                            "policy/chosen_mean": float(completed_policy_result["chosen_mean"]),
+                            "policy/chosen_bonus": float(completed_policy_result["chosen_bonus"]),
+                        } if completed_policy_result is not None else {}),
+                        **({
+                            "policy/update_reward": float(update_info["reward"]),
+                            "policy/update_action_delta_exposure": float(update_info["action"][0]),
+                            "policy/update_action_delta_iso": float(update_info["action"][1]),
+                        } if update_info is not None else {}),
+                        **({
+                            "policy/next_light_intensity": float(next_context["light_intensity"]),
+                            "policy/next_agent_speed": float(next_context["angular_velocity"]),
+                            "policy/next_iso_idx": float(result["next_iso_idx"]),
+                            "policy/next_exposure_idx": float(result["next_exposure_idx"]),
+                        } if has_next_lap else {}),
                         **get_eval_averages(log_reward_history, key_category="reward"),
                         **get_eval_averages(log_performance_history, key_category="performance"),
                     }, 
                     step=lap_idx,
                     commit=True
                 )
-                
-                result = l2_policy.step(
-                    context_information={
-                        "light_intensity": curr_light,
-                        "angular_velocity": curr_speed,
-                        "iso_idx": curr_iso_idx,
-                        "exposure_idx": curr_exposure_idx,
-                        "tie_break_random": False,
-                    },
-                    observations={
-                        "reward_info_override": get_avg_aggregation(log_reward_history), # Use rewards from the most recent lap for policy update
-                    } # Use rewards from the most recent lap for policy update
-                )
                 if DEBUG: print("[DEBUG]Policy Step Reward Result:", result["reward_info"])
-                curr_exposure_idx = result["next_exposure_idx"]
-                curr_iso_idx = result["next_iso_idx"]
-                log_context_history.append({
-                    "iso_idx": curr_iso_idx,
-                    "exposure_idx": curr_exposure_idx
-                })
-                
-                if DEBUG: print("[DEBUG] Sensor Control Action Taken - Exposure Index:", curr_exposure_idx, "ISO Index:", curr_iso_idx)
-                my_scene.sensor_control(
-                    control_parameters={
-                        "iso": sensor_param_space.iso_values[curr_iso_idx],
-                        "shutter_time": sensor_param_space.exposure_values[curr_exposure_idx],
-                    }
-                )
-                
                 save_synthetic_data(DATA_PATH, syn_data_cache, lap_idx)
                 # "More smooth and Moderately changing the context for the agent to adapt to new conditions 
                 # while avoiding drastic changes that could destabilize learning."
-                context = trajectory.value_at(lap_idx)
-                curr_light = context["light_intensity"]
-                curr_speed = context["angular_velocity"]
-                my_scene.control_light_intensity(curr_light)
+                if has_next_lap:
+                    curr_light = next_context["light_intensity"]
+                    curr_speed = next_context["angular_velocity"]
+                    curr_exposure_idx = result["next_exposure_idx"]
+                    curr_iso_idx = result["next_iso_idx"]
+                    current_lap_policy_result = result
+                    log_context_history.append({
+                        "iso_idx": curr_iso_idx,
+                        "exposure_idx": curr_exposure_idx
+                    })
+
+                    if DEBUG: print("[DEBUG] Sensor Control Action Taken - Exposure Index:", curr_exposure_idx, "ISO Index:", curr_iso_idx)
+                    my_scene.control_light_intensity(curr_light)
+                    my_scene.sensor_control(
+                        control_parameters={
+                            "iso": sensor_param_space.iso_values[curr_iso_idx],
+                            "shutter_time": sensor_param_space.exposure_values[curr_exposure_idx],
+                        }
+                    )
                 syn_data_cache = {
                     "rgb": [],
                     "depth": [],
