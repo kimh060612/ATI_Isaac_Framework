@@ -38,6 +38,7 @@ parser.add_argument("--reward_type", type=str, default="oracle", choices=["flipp
 parser.add_argument("--data_path", type=str, default="/issac-sim/dataset/experiment_mde_prototype/kaya_awesome_naming", help="Directory path to save synthetic data and logs")
 parser.add_argument("--max_laps", type=int, default=600, help="Maximum number of laps (context changes) to run in the simulation")
 parser.add_argument("--lap_period", type=int, default=30, help="Number of steps per lap (context change period)")
+parser.add_argument("--exp_ratio", type=float, default=0.5, help="Ratio of exploration vs exploitation for the L2 policy's action selection")
 args = parser.parse_args()
 
 RANDOM_SEED = 42
@@ -146,8 +147,8 @@ if __name__ == "__main__":
     ## L2 Policy and Reward Layer Setup
     set_deterministic(RANDOM_SEED)
     context_light = [200, 1000, 3000, 6000, 9000]  # Example light intensity values for the agent's context
-    context_agent_speed = [2.0, 2.0, 2.0, 2.0, 2.0]
-    # [1.5, 2.0, 1.5, 2.0, 1.5]
+    context_agent_speed = [1.5, 2.0, 1.5, 2.0, 1.5]
+    # [2.0, 2.0, 2.0, 2.0, 2.0]
     # [0.2, 0.5, 1.0, 1.5, 2.0]  # Example speed values for the agent's context
     trajectory = build_default_context_trajectory(
         light_values=[1000, 1000, 1000, 1000, 1000],
@@ -164,7 +165,7 @@ if __name__ == "__main__":
         sensor_names="agent_camera",
         sensor_config=sensor_param_space,
         reward_function=select_reward_function(args.reward_type), # reward_flipped_img or reward_test_time_augment or reward_oracle
-        alpha=1.0,
+        alpha=args.exp_ratio, # Exploration vs Exploitation ratio for LinUCB
         random_seed=RANDOM_SEED,
     )
     context = trajectory.value_at(0)
