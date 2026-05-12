@@ -20,7 +20,7 @@ class L1RGBCameraController(BaseSensorController):
         camera,
         camera_prim,
         camera_fps,
-        sensor_param_space: SensorParamSpace, 
+        # sensor_param_space: SensorParamSpace, 
         control_parameters: Dict[str, Union[float, int]] | None = None,
     ):
         super().__init__(
