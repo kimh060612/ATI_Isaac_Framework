@@ -30,8 +30,8 @@ class L1RGBCameraController(BaseSensorController):
             camera_fps=camera_fps,
             control_parameters=control_parameters,
         )
-        self.exposure_values = sensor_param_space.exposure_values
-        self.iso_values = sensor_param_space.iso_values
+        self.exposure_values = [0.001, 0.002, 0.004, 0.006, 0.008, 0.012, 0.016]
+        self.iso_values = [100, 400, 600, 800, 1200, 1600, 2400, 3200]
         
         self.EXP_T_MAX = max(self.exposure_values)
         self.EXP_T_MIN = min(self.exposure_values)
