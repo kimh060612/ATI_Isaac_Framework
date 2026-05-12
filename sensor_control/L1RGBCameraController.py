@@ -209,8 +209,8 @@ class L1RGBCameraController(BaseSensorController):
 
     def update_parameters(
         self, 
-        current_context: Dict[str, Union[dict, float, int]] | None,
-        l2_action: Dict[str, Union[float, int]] | None,
+        # current_context: Dict[str, Union[dict, float, int]] | None,
+        # l2_action: Dict[str, Union[float, int]] | None,
         control_parameters: Dict[str, Union[float, int]] | None
     ):
         # control_parameters = control_parameters or {}
