@@ -248,11 +248,6 @@ class L1ShortTermMemoryRGBController(BaseSensorController):
             camera_fps=camera_fps,
             control_parameters=control_parameters,
         )
-        self.update_parameters({
-            "step":0.0,
-            "reward":0.0,
-            **self.control_parameters
-        })
         ## Hyperparameters for differentiation logic
         self.short_diff_window = 2
         self.mid_diff_window = 6
@@ -261,6 +256,11 @@ class L1ShortTermMemoryRGBController(BaseSensorController):
         self.reward_memory: list[float] = [0.0] * self.memory_length
         self.curr_idx = 0
         self.curr_steps = 0
+        self.update_parameters({
+            "step":0.0,
+            "reward":0.0,
+            **self.control_parameters
+        })
         
     def __update_sensor_parameters(self, control_parameters: Dict[str, Union[float, int]] | None):
         control_parameters = control_parameters or {}
