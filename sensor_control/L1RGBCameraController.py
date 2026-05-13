@@ -248,7 +248,11 @@ class L1ShortTermMemoryRGBController(BaseSensorController):
             camera_fps=camera_fps,
             control_parameters=control_parameters,
         )
-        self.update_parameters(self.control_parameters)
+        self.update_parameters({
+            "step":0.0,
+            "reward":0.0,
+            **self.control_parameters
+        })
         ## Hyperparameters for differentiation logic
         self.short_diff_window = 2
         self.mid_diff_window = 6
