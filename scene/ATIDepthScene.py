@@ -80,7 +80,10 @@ class ATIDepthScene(BaseScene):
             curr_params.get("shutter_time", None) != control_parameters["shutter_time"]:
             controller = self.sensor_controllers[sensor_name]
             return controller.update_parameters(control_parameters)
-        return None
+        return {
+            "is_sensor_updated": True,
+            **curr_params
+        }
     
     def robot_control(
         self, 
