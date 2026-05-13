@@ -315,7 +315,11 @@ class L1ShortTermMemoryRGBController(BaseSensorController):
         self, 
         control_parameters: Dict[str, Union[float, int]] | None
     ):
-        control_parameters = control_parameters or {}
+        if control_parameters is None:
+            return {
+                "is_sensor_updated": False,
+                **self.get_control_parameters()
+            }
         curr_step = control_parameters.get("step", 0)
         exposure_time = control_parameters.get("shutter_time", None)  # default 10ms
         gain = control_parameters.get("iso", None)  # default gain 1.0
