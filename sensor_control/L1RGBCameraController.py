@@ -1,7 +1,6 @@
 from typing import Dict, Union, Tuple
-import numpy as np
-from policy.SensorParams import SensorParamSpace
 from .BaseSensorController import BaseSensorController
+import numpy as np
 import math
 
 class L1RGBCameraController(BaseSensorController):
@@ -20,7 +19,6 @@ class L1RGBCameraController(BaseSensorController):
         camera,
         camera_prim,
         camera_fps,
-        # sensor_param_space: SensorParamSpace, 
         control_parameters: Dict[str, Union[float, int]] | None = None,
     ):
         super().__init__(
@@ -233,3 +231,122 @@ class L1RGBCameraController(BaseSensorController):
             }
         )
         return self.get_control_parameters()
+
+class L1ShortTermMemoryRGBController(BaseSensorController):
+    def __init__(
+        self,
+        sensor_name,
+        camera,
+        camera_prim,
+        camera_fps,
+        control_parameters: Dict[str, Union[float, int]] | None = None,
+    ):
+        super().__init__(
+            sensor_name=sensor_name,
+            camera=camera,
+            camera_prim=camera_prim,
+            camera_fps=camera_fps,
+            control_parameters=control_parameters,
+        )
+        self.update_parameters(self.control_parameters)
+        ## Hyperparameters for differentiation logic
+        self.short_diff_window = 2
+        self.mid_diff_window = 6
+        self.memory_length = 10  # Number of past steps to remember
+        self.rel_exposure_value_memory: list[float] = [0.0] * self.memory_length
+        self.reward_memory: list[float] = [0.0] * self.memory_length
+        self.curr_idx = 0
+        self.curr_steps = 0
+        
+    def __update_sensor_parameters(self, control_parameters: Dict[str, Union[float, int]] | None):
+        control_parameters = control_parameters or {}
+        if "iso" in control_parameters and control_parameters["iso"] is not None:
+            self._set_iso(control_parameters["iso"])
+        if "shutter_time" in control_parameters and control_parameters["shutter_time"] is not None:
+            self._set_shutter_time(control_parameters["shutter_time"])
+        if "aperture" in control_parameters and control_parameters["aperture"] is not None:
+            self._set_aperture(control_parameters["aperture"])
+    
+    @staticmethod
+    def __linear_slope(memory: list[float]) -> float:
+        y = np.asarray(memory, dtype=np.float64)
+        x = np.arange(len(y), dtype=np.float64)
+        x = x - x.mean()
+        y = y - y.mean()
+        denom = np.sum(x * x)
+        if denom < 1e-12:
+            return 0.0
+        return float(np.sum(x * y) / denom)
+    
+    def __make_queue_into_linear_list(self, memory: list[float]) -> list[float]:
+        # Assuming self.curr_idx points to the most recent entry
+        return memory[self.curr_idx + 1:] + memory[:self.curr_idx + 1]
+    
+    def __judge_significant_drop(
+        self, 
+        reward_linear: list[float], 
+        rel_exp_linear: list[float]
+    ) -> bool:
+        # Threshold for significant reward drop, can be tuned based on empirical observations
+        if self.curr_steps < self.mid_diff_window + self.short_diff_window:
+            return False  # Not enough data to judge
+        p_win = self.mid_diff_window
+        r_win = self.short_diff_window
+        reward_slope = self.__linear_slope(reward_linear[-(p_win + r_win):])
+        rel_exp_slope = self.__linear_slope(rel_exp_linear[-(p_win + r_win):])
+        prev = reward_linear[-(p_win + r_win):-r_win]
+        recent = reward_linear[-r_win:]
+        prev_mean = float(np.mean(prev))
+        prev_std = float(np.std(prev)) + 1e-12
+        recent_mean = float(np.mean(recent))
+        abs_drop = prev_mean - recent_mean
+        rel_drop = abs_drop / (abs(prev_mean) + 1e-12)
+        z_drop = abs_drop / prev_std
+        
+        reward_crashed = (
+            abs_drop >= 1e-6 or reward_slope < -0.2
+            and rel_drop >= 0.25
+            and z_drop >= 2.0
+        )
+        
+        return reward_crashed and math.fabs(rel_exp_slope) > 0.2
+    
+    def update_parameters(
+        self, 
+        control_parameters: Dict[str, Union[float, int]] | None
+    ):
+        control_parameters = control_parameters or {}
+        curr_step = control_parameters.get("step", 0)
+        exposure_time = control_parameters.get("shutter_time", None)  # default 10ms
+        gain = control_parameters.get("iso", None)  # default gain 1.0
+        reward_value = control_parameters.get("reward", None)    
+        if exposure_time is None or \
+            gain is None or \
+            curr_step is None or \
+            reward_value is None:
+            raise ValueError("exposure_time, gain, step, and reward must be provided in control_parameters.")
+        
+        is_sensor_updated = False
+        target_rel_exp = math.log2((exposure_time * 1000.) * (gain / 100.))
+        self.curr_steps += 1
+        self.curr_idx = (self.curr_idx + 1) % self.memory_length
+        self.rel_exposure_value_memory[self.curr_idx] = target_rel_exp
+        self.reward_memory[self.curr_idx] = reward_value
+        
+        ### If reward is significantly drops in short term, deny the l2 action by keeping the current sensor parameters.
+        rel_exp_linear = self.__make_queue_into_linear_list(self.rel_exposure_value_memory)
+        reward_linear = self.__make_queue_into_linear_list(self.reward_memory)
+        # Threshold for significant reward drop, can be tuned based on empirical observations
+        if not self.__judge_significant_drop(reward_linear, rel_exp_linear):
+            is_sensor_updated = True
+            self.__update_sensor_parameters(
+                control_parameters={
+                    "shutter_time": exposure_time,
+                    "iso": gain,
+                }
+            )
+        
+        return {
+            "is_sensor_updated": is_sensor_updated,
+            **self.get_control_parameters()
+        }

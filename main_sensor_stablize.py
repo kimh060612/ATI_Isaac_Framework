@@ -135,6 +135,7 @@ if __name__ == "__main__":
         robot_config=kaya_config,
     )
     render_config.set_rendering_mode("realtime")
+    render_config.set_agent_sensor_controller("l1_short_term_memory_controller")
     render_config.set_pathtracing_param(spp=128, num_subsamples=32)
     my_scene = ATIDepthScene(
         simulation_app,
@@ -184,6 +185,8 @@ if __name__ == "__main__":
         context_information={
             "light_intensity": curr_light,
             "angular_velocity": curr_speed,
+            # Assume the initial action is accepted to allow the policy to update based on the initial context
+            "action_accepted": True, 
             "iso_idx": curr_iso_idx,
             "exposure_idx": curr_exposure_idx,
             "tie_break_random": True,
@@ -200,16 +203,12 @@ if __name__ == "__main__":
 
     ## Initial Sensor Control
     my_scene.control_light_intensity(curr_light) # Set initial light intensity
-    my_scene.sensor_control(
+    control_results = my_scene.sensor_control(
         control_parameters={
-            # "l2_action": {"d_exp": 0, "d_iso": 0}, 
-            # "current_context": {
-            #     "lin_vel": 0.0,
-            #     "ang_vel": curr_speed,
-            #     "lux": curr_light,
-            # },
             "iso": sensor_param_space.iso_values[curr_iso_idx],
-            "shutter_time": sensor_param_space.exposure_values[curr_exposure_idx]
+            "shutter_time": sensor_param_space.exposure_values[curr_exposure_idx],
+            "step": 0,
+            "reward": 0.0,
         }
     )
     
@@ -305,6 +304,7 @@ if __name__ == "__main__":
                     context_information={
                         "light_intensity": next_context["light_intensity"],
                         "angular_velocity": next_context["angular_velocity"],
+                        "action_accepted": control_results["is_sensor_updated"],
                         "iso_idx": curr_iso_idx,
                         "exposure_idx": curr_exposure_idx,
                         "tie_break_random": True,
@@ -363,19 +363,12 @@ if __name__ == "__main__":
 
                     if DEBUG: print("[DEBUG] Sensor Control Action Taken - Exposure Index:", curr_exposure_idx, "ISO Index:", curr_iso_idx)
                     my_scene.control_light_intensity(curr_light)
-                    my_scene.sensor_control(
+                    control_results = my_scene.sensor_control(
                         control_parameters={
-                            # "l2_action": {
-                            #     "d_exp": update_info["action"][0], 
-                            #     "d_iso": update_info["action"][1]
-                            # }, 
-                            # "current_context": {
-                            #     "lin_vel": 0.0,
-                            #     "ang_vel": curr_speed,
-                            #     "lux": curr_light,
-                            # },
                             "iso": sensor_param_space.iso_values[curr_iso_idx],
-                            "shutter_time": sensor_param_space.exposure_values[curr_exposure_idx]
+                            "shutter_time": sensor_param_space.exposure_values[curr_exposure_idx],
+                            "step": lap_idx,
+                            "reward": result["reward_info"]["reward"],
                         }
                     )
                 syn_data_cache = {
@@ -409,31 +402,3 @@ if __name__ == "__main__":
         print("[Main] Done. If process hangs, run: pkill -f 'python.sh|kit'")
     
     simulation_app.close()
-
-
-# def wandb_log_step(
-#     wandb_run: wandb.Run, 
-#     lap_idx: int,
-#     context_info: dict,
-#     context_light: float,
-#     context_agent_speed: float,
-#     reward_info: dict, 
-#     metric_info: dict
-# ):
-#     wandb_run.log({
-#         "light_intensity": context_light,
-#         "agent_speed": context_agent_speed,
-#         **context_info,
-#         **reward_info,
-#         **metric_info,
-#     }, step=lap_idx)
-
-# wandb_log_step(
-#     wandb_run=wandb_run, 
-#     lap_idx=lap_idx, 
-#     context_info=get_eval_averages(log_context_history, key_category="context"), 
-#     reward_info=get_eval_averages(log_reward_history, key_category="reward"), 
-#     metric_info=get_eval_averages(log_performance_history, key_category="performance"),  
-#     context_light=curr_light, 
-#     context_agent_speed=curr_speed 
-# )

@@ -40,7 +40,7 @@ class ATIBaseConfig:
     spawn_random_objs: bool = True
     min_distance_from_agent: float = 3.0 # Minimum distance from the agent for randomly spawned objects
     robot_config: ATIBaseRobotConfig
-    camera_controller: str = "l1_naive_controller" # "exposure_iso_controller"
+    camera_controller: str = "exposure_iso_controller" # "exposure_iso_controller", "l1_naive_controller", "l1_short_term_memory_controller"
     extra_light_position = (0.0, 0.0, 2.0)
     
     single_object_usd_paths: List[Tuple[str, int]] = [] # field(default_factory=list)
@@ -87,6 +87,14 @@ class ATIBaseConfig:
         # enforce physics_dt and rendering_dt to be no larger than 1 / agent_camera_fps for correct motion blur sampling and camera-aligned stepping.
         self.physics_dt = self.rendering_dt = 1. / self.agent_camera_fps
         
+    
+    def set_agent_sensor_controller(self, controller_name: str):
+        if controller_name not in ["exposure_iso_controller", "l1_naive_controller", "l1_short_term_memory_controller"]:
+            raise ValueError(
+                f"Unsupported camera controller: {controller_name}. "
+                "Supported controllers are 'exposure_iso_controller', 'l1_naive_controller', and 'l1_short_term_memory_controller'."
+            )
+        self.camera_controller = controller_name
     
     def set_agent_camera_usd_path(self, camera_usd_path):
         self.agent_camera_usd_path = camera_usd_path

@@ -32,7 +32,7 @@ from isaacsim.sensors.camera import Camera
 from isaacsim.sensors.physics import IMUSensor
 
 from ati_config import ATIBaseConfig, DEBUG
-from sensor_control import BaseSensorController, ShutterExposureSensorController, L1RGBCameraController
+from sensor_control import BaseSensorController, ShutterExposureSensorController, L1RGBCameraController, L1ShortTermMemoryRGBController
 from ati_utils.iso_noise_processing import add_d455_noise
 from tqdm import tqdm
 
@@ -40,6 +40,7 @@ class BaseScene(metaclass=ABCMeta):
     SENSOR_CONTROLLER_CLS = {
         "exposure_iso_controller": ShutterExposureSensorController,
         "l1_naive_controller": L1RGBCameraController,
+        "l1_short_term_memory_controller": L1ShortTermMemoryRGBController,
         "name_of_controller": None, # Replace with actual example controller class
     }
     
