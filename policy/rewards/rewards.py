@@ -56,10 +56,10 @@ def reward_test_time_augment(
         inverse_depths=inverse_depths,
         reduction=uncertainty_reduction,
     )
-    image_reward = compute_blur_penalty(rgb, sharpness_ref=20) # compute_composite_image_quality(rgb).score
+    image_reward = ati_laplacian_score(rgb) # compute_composite_image_quality(rgb).score
     # motion_blur_score(rgb)
     confidence = float(1. / (1 + uncertainty)) # Convert uncertainty to confidence (heuristic)
-    total_reward = depth_weight * confidence - image_weight * image_reward
+    total_reward = depth_weight * confidence + image_weight * image_reward
 
     return {
         "reward": float(total_reward),

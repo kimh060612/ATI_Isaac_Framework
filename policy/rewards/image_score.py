@@ -378,6 +378,32 @@ def gray_intensity_entropy(img: np.ndarray, num_bins=256) -> float:
     entropy = -np.sum(hist * np.log(hist))
     return float(entropy)
 
+def ati_laplacian_score(rgb_img: np.ndarray) -> float:
+    img = np.asarray(rgb_img)
+    if img.dtype != np.uint8:
+        img = img.astype(np.float32)
+        if img.max() <= 1.5:
+            img = img * 255.0
+        img = np.clip(img, 0, 255).astype(np.uint8)
+
+    h0, w0 = img.shape[:2]
+    w, h = max(2, w0 // 4), max(2, h0 // 4)
+
+    small = cv2.resize(img, (w, h), interpolation=cv2.INTER_NEAREST)
+    r = small[..., 0].astype(np.float64)
+    g = small[..., 1].astype(np.float64)
+    b = small[..., 2].astype(np.float64)
+    gray = 0.299 * r + 0.587 * g + 0.114 * b
+
+    lap = (
+        gray[:-2, 1:-1]
+        + gray[2:, 1:-1]
+        + gray[1:-1, :-2]
+        + gray[1:-1, 2:]
+        - 4.0 * gray[1:-1, 1:-1]
+    )
+    return float(lap.var())
+
 # def _compute_brisque_quality(
 #     bgr_u8: np.ndarray,
 #     brisque_model_path: str,
