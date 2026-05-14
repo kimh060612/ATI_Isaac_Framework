@@ -18,7 +18,7 @@ simulation_app = SimulationApp(launch_config=CONFIG)
 
 # Scene Building
 from ati_utils.log_utils import configure_isaac_sim_logging, save_synthetic_data, get_eval_averages
-from robot_control import build_default_context_trajectory
+from robot_control import build_default_context_trajectory, build_step_context_trajectory
 from scene import ATIDepthScene
 from ati_config import ATIBaseConfig, ATIBaseRobotConfig, L3MDEConfig
 from l3_perception_layer import L3PLayerDepthAnythingv2, set_deterministic
@@ -151,15 +151,13 @@ if __name__ == "__main__":
     context_agent_speed = [1.5, 2.0, 1.5, 2.0, 1.5]
     # [2.0, 2.0, 2.0, 2.0, 2.0]
     # [0.2, 0.5, 1.0, 1.5, 2.0]  # Example speed values for the agent's context
-    trajectory = build_default_context_trajectory(
-        light_values=[1000, 1000, 1000, 1000, 1000],
+    trajectory = build_step_context_trajectory(
+        light_values=[1000],
         speed_values=[s * RAD_COEFF for s in context_agent_speed],
-        light_transition_steps=args.lap_period * 20,
-        speed_transition_steps=args.lap_period * 5,
-        light_hold_steps=args.lap_period,
-        speed_hold_steps=args.lap_period,
-        speed_phase_offset_steps=args.lap_period,
-    )
+        light_hold_steps=args.lap_period * 10,
+        speed_hold_steps=args.lap_period * 10,
+        speed_phase_offset_steps=0,
+    ) 
     
     sensor_param_space = SensorParamSpace()
     l2_policy = L2DisjointLinUCBRGBCamPolicy(

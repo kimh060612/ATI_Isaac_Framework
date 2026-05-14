@@ -257,8 +257,8 @@ class L1ShortTermMemoryRGBController(BaseSensorController):
         self.memory_length = 10  # Number of past steps to remember
         self.trend_history_window = 3
         self.min_trend_transitions = 2
-        self.reward_abs_drop_threshold = 0.1
-        self.reward_rel_drop_threshold = 0.2
+        self.reward_abs_drop_threshold = 0.15
+        self.reward_rel_drop_threshold = 0.25
         self.reward_slope_drop_threshold = -0.05
         self.exposure_product_trend_epsilon = 1e-9
         self.selection_history_window = 5
