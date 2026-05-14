@@ -23,7 +23,12 @@ from scene import ATIDepthScene
 from ati_config import ATIBaseConfig, ATIBaseRobotConfig, L3MDEConfig
 from l3_perception_layer import L3PLayerDepthAnythingv2, set_deterministic
 from policy.rewards.rewards import reward_flipped_img, reward_test_time_augment, reward_oracle
-from policy import L2SharedLinUCBRGBCamPolicy, L2DisjointLinUCBRGBCamPolicy, SensorParamSpace
+from policy import (
+    L2SharedLinUCBRGBCamPolicy,
+    L2DisjointLinUCBRGBCamPolicy,
+    L2ContextNormalizedDisjointLinUCBRGBCamPolicy,
+    SensorParamSpace,
+)
 import argparse
 from PIL import Image
 import traceback
@@ -39,6 +44,9 @@ parser.add_argument("--data_path", type=str, default="/issac-sim/dataset/experim
 parser.add_argument("--max_laps", type=int, default=600, help="Maximum number of laps (context changes) to run in the simulation")
 parser.add_argument("--lap_period", type=int, default=30, help="Number of steps per lap (context change period)")
 parser.add_argument("--exp_ratio", type=float, default=0.5, help="Ratio of exploration vs exploitation for the L2 policy's action selection")
+parser.add_argument("--policy_type", type=str, default="disjoint_ucb", choices=["disjoint_ucb", "context_advantage_disjoint_ucb"], help="L2 policy class to use for camera control.")
+parser.add_argument("--advantage_normalize_by_std", action="store_true", help="Normalize context advantage rewards by the context reward standard deviation.")
+parser.add_argument("--advantage_clip", type=float, default=1.0, help="Absolute clipping value for learned advantage rewards.")
 args = parser.parse_args()
 
 RANDOM_SEED = 42
@@ -51,7 +59,7 @@ def initialize_wandb(context_len, max_laps, max_steps, exp_name=None):
         project="ati_sensor_control_prototype",
         name=exp_name,
         config={
-            "policy_type": "L2DisjointLinUCBRGBCamPolicy",
+            "policy_type": args.policy_type,
             "turn_per_lap": context_len,
             "max_laps": max_laps,
             "max_steps": max_steps,
@@ -160,13 +168,26 @@ if __name__ == "__main__":
     ) 
     
     sensor_param_space = SensorParamSpace()
-    l2_policy = L2DisjointLinUCBRGBCamPolicy(
-        sensor_names="agent_camera",
-        sensor_config=sensor_param_space,
-        reward_function=select_reward_function(args.reward_type), # reward_flipped_img or reward_test_time_augment or reward_oracle
-        alpha=args.exp_ratio, # Exploration vs Exploitation ratio for LinUCB
-        random_seed=RANDOM_SEED,
+    policy_cls = (
+        L2ContextNormalizedDisjointLinUCBRGBCamPolicy
+        if args.policy_type == "context_advantage_disjoint_ucb"
+        else L2DisjointLinUCBRGBCamPolicy
     )
+    policy_kwargs = {
+        "sensor_names": "agent_camera",
+        "sensor_config": sensor_param_space,
+        "reward_function": select_reward_function(args.reward_type), # reward_flipped_img or reward_test_time_augment or reward_oracle
+        "alpha": args.exp_ratio, # Exploration vs Exploitation ratio for LinUCB
+        "random_seed": RANDOM_SEED,
+    }
+    if policy_cls is L2ContextNormalizedDisjointLinUCBRGBCamPolicy:
+        policy_kwargs.update(
+            {
+                "normalize_by_std": args.advantage_normalize_by_std,
+                "advantage_clip": args.advantage_clip,
+            }
+        )
+    l2_policy = policy_cls(**policy_kwargs)
     context = trajectory.value_at(0)
     curr_light = context["light_intensity"]
     curr_speed = context["angular_velocity"]
@@ -326,6 +347,10 @@ if __name__ == "__main__":
                             "policy/update_reward": float(update_info["reward"]),
                             "policy/update_action_delta_exposure": float(update_info["action"][0]),
                             "policy/update_action_delta_iso": float(update_info["action"][1]),
+                            "policy/update_raw_reward": float(update_info.get("raw_reward", update_info["reward"])),
+                            "policy/update_advantage": float(update_info.get("advantage", update_info["reward"])),
+                            "policy/update_baseline": float(update_info.get("baseline", 0.0)),
+                            "policy/update_baseline_count": float(update_info.get("baseline_count", 0)),
                         } if update_info is not None else {}),
                         **({
                             "policy/next_light_intensity": float(next_context["light_intensity"]),

@@ -539,6 +539,232 @@ class L2DisjointLinUCBRGBCamPolicy(BaseCMABPolicy):
         return record
 
 
+class L2ContextNormalizedDisjointLinUCBRGBCamPolicy(L2DisjointLinUCBRGBCamPolicy):
+    """
+    Disjoint LinUCB with context-normalized advantage rewards.
+
+    The policy keeps the same action selection interface as
+    L2DisjointLinUCBRGBCamPolicy, but updates the linear model with:
+
+        advantage = raw_reward - baseline(context)
+
+    where the baseline is tracked only from environment context keys such as
+    light intensity and angular velocity. This removes scene/context difficulty
+    from the reward before assigning credit to the selected action.
+    """
+    def __init__(
+        self,
+        sensor_names,
+        sensor_config: SensorParamSpace,
+        reward_function,
+        alpha=1,
+        lambda_reg=1,
+        random_seed=None,
+        baseline_keys: Tuple[str, ...] = ("light_intensity", "angular_velocity"),
+        context_round_decimals: int = 6,
+        baseline_momentum: Optional[float] = 0.1,
+        min_baseline_count: int = 1,
+        normalize_by_std: bool = False,
+        min_std: float = 1e-3,
+        advantage_clip: Optional[float] = 1.0,
+    ):
+        super().__init__(
+            sensor_names=sensor_names,
+            sensor_config=sensor_config,
+            reward_function=reward_function,
+            alpha=alpha,
+            lambda_reg=lambda_reg,
+            random_seed=random_seed,
+        )
+        self.baseline_keys = tuple(baseline_keys)
+        self.context_round_decimals = int(context_round_decimals)
+        self.baseline_momentum = baseline_momentum
+        self.min_baseline_count = int(min_baseline_count)
+        self.normalize_by_std = bool(normalize_by_std)
+        self.min_std = float(min_std)
+        self.advantage_clip = advantage_clip
+        self.context_reward_stats = {}
+        self.global_reward_stats = self._new_reward_stats()
+
+    def _new_reward_stats(self) -> dict:
+        return {
+            "count": 0,
+            "mean": 0.0,
+            "m2": 0.0,
+            "var": 0.0,
+        }
+
+    def _context_key(self, context_information: dict) -> Tuple[Tuple[str, object], ...]:
+        key_parts = []
+        for key in self.baseline_keys:
+            value = context_information[key]
+            if isinstance(value, (float, np.floating)):
+                value = round(float(value), self.context_round_decimals)
+            elif isinstance(value, (int, np.integer)):
+                value = int(value)
+            else:
+                value = str(value)
+            key_parts.append((key, value))
+        return tuple(key_parts)
+
+    def _update_reward_stats(self, stats: dict, reward: float) -> None:
+        stats["count"] += 1
+        count = stats["count"]
+
+        if count == 1:
+            stats["mean"] = reward
+            stats["m2"] = 0.0
+            stats["var"] = 0.0
+            return
+
+        if self.baseline_momentum is None:
+            delta = reward - stats["mean"]
+            stats["mean"] += delta / count
+            delta_after = reward - stats["mean"]
+            stats["m2"] += delta * delta_after
+            stats["var"] = stats["m2"] / max(count - 1, 1)
+            return
+
+        momentum = float(np.clip(self.baseline_momentum, 0.0, 1.0))
+        delta = reward - stats["mean"]
+        stats["mean"] += momentum * delta
+        stats["var"] = (1.0 - momentum) * (stats["var"] + momentum * delta * delta)
+        stats["m2"] = stats["var"] * max(count - 1, 1)
+
+    def _select_baseline_stats(self, baseline_key: Tuple[Tuple[str, object], ...]) -> dict | None:
+        context_stats = self.context_reward_stats.get(baseline_key)
+        if context_stats is not None and context_stats["count"] >= self.min_baseline_count:
+            return context_stats
+        if self.global_reward_stats["count"] > 0:
+            return self.global_reward_stats
+        return None
+
+    def _compute_advantage(self, raw_reward: float, baseline_key: Tuple[Tuple[str, object], ...]) -> dict:
+        baseline_stats = self._select_baseline_stats(baseline_key)
+        if baseline_stats is None:
+            baseline = raw_reward
+            baseline_count = 0
+            baseline_std = 0.0
+        else:
+            baseline = float(baseline_stats["mean"])
+            baseline_count = int(baseline_stats["count"])
+            baseline_std = float(np.sqrt(max(baseline_stats["var"], 0.0)))
+
+        advantage = raw_reward - baseline
+        if self.normalize_by_std and baseline_count > 1:
+            advantage /= max(baseline_std, self.min_std)
+
+        if self.advantage_clip is not None:
+            clip_value = abs(float(self.advantage_clip))
+            advantage = float(np.clip(advantage, -clip_value, clip_value))
+
+        return {
+            "advantage": float(advantage),
+            "baseline": float(baseline),
+            "baseline_count": baseline_count,
+            "baseline_std": float(baseline_std),
+        }
+
+    def _update_baselines(self, baseline_key: Tuple[Tuple[str, object], ...], raw_reward: float) -> None:
+        context_stats = self.context_reward_stats.setdefault(baseline_key, self._new_reward_stats())
+        self._update_reward_stats(context_stats, raw_reward)
+        self._update_reward_stats(self.global_reward_stats, raw_reward)
+
+    def update_parameters(
+        self,
+        z: np.ndarray,
+        reward: float,
+        action: Tuple[int, int],
+        baseline_key: Tuple[Tuple[str, object], ...] | None = None,
+    ):
+        raw_reward = float(reward)
+        if baseline_key is None:
+            baseline_key = (("global", "global"),)
+
+        advantage_info = self._compute_advantage(raw_reward, baseline_key)
+        learned_reward = advantage_info["advantage"]
+
+        action_idx = self._action_index(action)
+        self.A[action_idx] += np.outer(z, z)
+        self.b[action_idx] += learned_reward * z
+        self._update_baselines(baseline_key, raw_reward)
+
+        return {
+            "action": action,
+            "action_idx": action_idx,
+            "reward": float(learned_reward),
+            "advantage": float(learned_reward),
+            "raw_reward": raw_reward,
+            "baseline": advantage_info["baseline"],
+            "baseline_count": advantage_info["baseline_count"],
+            "baseline_std": advantage_info["baseline_std"],
+            "baseline_key": baseline_key,
+        }
+
+    def step(
+        self,
+        context_information: dict,
+        observations: Dict[str, Union[np.ndarray, List[np.ndarray], float, str]],
+    ) -> Dict[str, Union[float, int, Tuple[int, int]]]:
+        r_t = _resolve_reward_info(self, observations)
+
+        update_info = None
+        skip_update = bool(context_information.get("skip_update", False))
+        store_pending = bool(context_information.get("store_pending", not skip_update))
+        if (not skip_update) and self.pending_update is not None:
+            update_info = self.update_parameters(
+                self.pending_update["z"],
+                float(r_t["reward"]),
+                self.pending_update["action"],
+                self.pending_update["baseline_key"],
+            )
+
+        sel = self.select_action(
+            context_information=context_information,
+            tie_break_random=bool(context_information.get("tie_break_random", True)),
+        )
+
+        action = sel["chosen_action"]
+        z = sel["chosen_z"]
+        next_e_idx, next_i_idx = self.transition(
+            context_information["exposure_idx"],
+            context_information["iso_idx"],
+            action
+        )
+        next_exposure_value = self.cfg.exposure_values[next_e_idx]
+        next_iso_value = self.cfg.iso_values[next_i_idx]
+        baseline_key = self._context_key(context_information)
+
+        if store_pending:
+            self.pending_update = {
+                "z": z.copy(),
+                "action": action,
+                "baseline_key": baseline_key,
+            }
+        else:
+            self.pending_update = None
+
+        record = {
+            "angular_velocity": context_information["angular_velocity"],
+            "light_intensity": context_information["light_intensity"],
+            "exposure_idx": context_information["exposure_idx"],
+            "iso_idx": context_information["iso_idx"],
+            "action": action,
+            "next_exposure_idx": next_e_idx,
+            "next_iso_idx": next_i_idx,
+            "next_exposure_value": next_exposure_value,
+            "next_iso_value": next_iso_value,
+            "chosen_score": sel["chosen_score"],
+            "chosen_mean": sel["chosen_mean"],
+            "chosen_bonus": sel["chosen_bonus"],
+            "baseline_key": baseline_key,
+            "reward_info": r_t,
+            "update_info": update_info,
+        }
+        self.history.append(record)
+        return record
+
+
 class L2DisjointLinUCBSafeBoundedCamPolicy(BaseCMABPolicy):
     """
     Disjoint Linear UCB policy for RGB camera control. Controlling only Exposure time and ISO with discrete actions.
