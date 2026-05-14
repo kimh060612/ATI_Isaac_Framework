@@ -283,8 +283,8 @@ class L2DisjointLinUCBRGBCamPolicy(BaseCMABPolicy):
         self.action_to_index = {action: idx for idx, action in enumerate(all_actions)}
 
         # Feature dimension:
-        # [1, w, log_light, action_denied]
-        dim_context = 4
+        # [1, w, log_light] => , action_denied
+        dim_context = 3
 
         super().__init__(
             sensor_names,
@@ -323,7 +323,7 @@ class L2DisjointLinUCBRGBCamPolicy(BaseCMABPolicy):
         self,
         angular_velocity: float,
         light_intensity: float,
-        action_accepted: int
+        # action_accepted: int
         # exposure_idx: int,
         # iso_idx: int,
     ) -> np.ndarray:
@@ -341,7 +341,7 @@ class L2DisjointLinUCBRGBCamPolicy(BaseCMABPolicy):
                 1.0,
                 float(angular_velocity),
                 float(np.log(light_intensity)),
-                float(action_accepted),
+                # float(action_accepted),
             ],
             dtype=np.float64,
         )
@@ -396,7 +396,7 @@ class L2DisjointLinUCBRGBCamPolicy(BaseCMABPolicy):
         context = self.build_context(
             angular_velocity=context_information["angular_velocity"],
             light_intensity=context_information["light_intensity"],
-            action_accepted=int(context_information["action_accepted"]),
+            # action_accepted=int(context_information["action_accepted"]),
             # exposure_idx=context_information["exposure_idx"],
             # iso_idx=context_information["iso_idx"],
         )
@@ -521,7 +521,7 @@ class L2DisjointLinUCBRGBCamPolicy(BaseCMABPolicy):
         record = {
             "angular_velocity": context_information["angular_velocity"],
             "light_intensity": context_information["light_intensity"],
-            "action_accepted": int(context_information["action_accepted"]),
+            # "action_accepted": int(context_information["action_accepted"]),
             "exposure_idx": context_information["exposure_idx"],
             "iso_idx": context_information["iso_idx"],
             "action": action,
