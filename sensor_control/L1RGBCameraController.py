@@ -248,19 +248,30 @@ class L1ShortTermMemoryRGBController(BaseSensorController):
             camera_fps=camera_fps,
             control_parameters=control_parameters,
         )
+        self.exposure_values = [0.001, 0.002, 0.004, 0.006, 0.008, 0.012, 0.016]
+        self.iso_values = [100, 400, 600, 800, 1200, 1600, 2400, 3200]
+
         ## Hyperparameters for differentiation logic
         self.short_diff_window = 2
         self.mid_diff_window = 6
         self.memory_length = 10  # Number of past steps to remember
-        self.rel_exposure_value_memory: list[float] = [0.0] * self.memory_length
-        self.reward_memory: list[float] = [0.0] * self.memory_length
-        self.curr_idx = 0
+        self.trend_history_window = 3
+        self.min_trend_transitions = 2
+        self.reward_abs_drop_threshold = 0.15
+        self.reward_rel_drop_threshold = 0.25
+        self.reward_slope_drop_threshold = -0.05
+        self.exposure_product_trend_epsilon = 1e-9
+        self.selection_history_window = 5
+
+        self.step_memory: list[float] = []
+        self.exposure_time_memory: list[float] = []
+        self.iso_memory: list[float] = []
+        self.exposure_product_memory: list[float] = []
+        self.rel_exposure_value_memory: list[float] = []
+        self.reward_memory: list[float] = []
+        self.curr_idx = -1
         self.curr_steps = 0
-        self.update_parameters({
-            "step":0.0,
-            "reward":0.0,
-            **self.control_parameters
-        })
+        self.__update_sensor_parameters(self.control_parameters)
         
     def __update_sensor_parameters(self, control_parameters: Dict[str, Union[float, int]] | None):
         control_parameters = control_parameters or {}
@@ -283,37 +294,231 @@ class L1ShortTermMemoryRGBController(BaseSensorController):
         return float(np.sum(x * y) / denom)
     
     def __make_queue_into_linear_list(self, memory: list[float]) -> list[float]:
-        # Assuming self.curr_idx points to the most recent entry
-        return memory[self.curr_idx + 1:] + memory[:self.curr_idx + 1]
-    
-    def __judge_significant_drop(
-        self, 
-        reward_linear: list[float], 
-        rel_exp_linear: list[float]
-    ) -> bool:
-        # Threshold for significant reward drop, can be tuned based on empirical observations
-        if self.curr_steps < self.mid_diff_window + self.short_diff_window:
-            return False  # Not enough data to judge
-        p_win = self.mid_diff_window
-        r_win = self.short_diff_window
-        reward_slope = self.__linear_slope(reward_linear[-(p_win + r_win):])
-        rel_exp_slope = self.__linear_slope(rel_exp_linear[-(p_win + r_win):])
-        prev = reward_linear[-(p_win + r_win):-r_win]
-        recent = reward_linear[-r_win:]
+        return list(memory)
+
+    @staticmethod
+    def __exposure_product(exposure_time: float, iso: float) -> float:
+        return float(exposure_time) * float(iso)
+
+    @staticmethod
+    def __rel_exposure_value(exposure_time: float, iso: float) -> float:
+        ev_value = (float(exposure_time) * 1000.0) * (float(iso) / 100.0)
+        return math.log2(max(ev_value, 1e-12))
+
+    @staticmethod
+    def __sign_with_deadband(value: float, epsilon: float) -> int:
+        if value > epsilon:
+            return 1
+        if value < -epsilon:
+            return -1
+        return 0
+
+    @staticmethod
+    def __closest_index(grid: list[float], target: float) -> int:
+        arr = np.asarray(grid, dtype=np.float64)
+        return int(np.argmin(np.abs(arr - float(target))))
+
+    def __append_memory(
+        self,
+        step: float,
+        exposure_time: float,
+        iso: float,
+        reward: float,
+    ):
+        self.step_memory.append(float(step))
+        self.exposure_time_memory.append(float(exposure_time))
+        self.iso_memory.append(float(iso))
+        self.exposure_product_memory.append(self.__exposure_product(exposure_time, iso))
+        self.rel_exposure_value_memory.append(self.__rel_exposure_value(exposure_time, iso))
+        self.reward_memory.append(float(reward))
+
+        if len(self.reward_memory) > self.memory_length:
+            self.step_memory.pop(0)
+            self.exposure_time_memory.pop(0)
+            self.iso_memory.pop(0)
+            self.exposure_product_memory.pop(0)
+            self.rel_exposure_value_memory.pop(0)
+            self.reward_memory.pop(0)
+
+        self.curr_steps += 1
+        self.curr_idx = len(self.reward_memory) - 1
+
+    def __reward_drop_stats(self, reward_linear: list[float]) -> dict:
+        if len(reward_linear) < self.short_diff_window + 1:
+            return {
+                "reward_crashed": False,
+                "abs_drop": 0.0,
+                "rel_drop": 0.0,
+                "reward_slope": 0.0,
+                "prev_mean": np.nan,
+                "recent_reward": reward_linear[-1] if reward_linear else np.nan,
+            }
+
+        prev_window = min(self.mid_diff_window, len(reward_linear) - 1)
+        prev = np.asarray(reward_linear[-(prev_window + 1):-1], dtype=np.float64)
+        recent_reward = float(reward_linear[-1])
         prev_mean = float(np.mean(prev))
-        prev_std = float(np.std(prev)) + 1e-12
-        recent_mean = float(np.mean(recent))
-        abs_drop = prev_mean - recent_mean
+        abs_drop = prev_mean - recent_reward
         rel_drop = abs_drop / (abs(prev_mean) + 1e-12)
-        z_drop = abs_drop / prev_std
-        
+        slope_window = reward_linear[-min(len(reward_linear), prev_window + 1):]
+        reward_slope = self.__linear_slope(slope_window)
         reward_crashed = (
-            abs_drop >= 1e-6 or reward_slope < -0.2
-            and rel_drop >= 0.25
-            and z_drop >= 2.0
+            abs_drop >= self.reward_abs_drop_threshold
+            or (
+                rel_drop >= self.reward_rel_drop_threshold
+                and reward_slope <= self.reward_slope_drop_threshold
+            )
         )
-        
-        return reward_crashed and math.fabs(rel_exp_slope) > 0.2
+
+        return {
+            "reward_crashed": bool(reward_crashed),
+            "abs_drop": float(abs_drop),
+            "rel_drop": float(rel_drop),
+            "reward_slope": float(reward_slope),
+            "prev_mean": float(prev_mean),
+            "recent_reward": recent_reward,
+        }
+
+    def __continuing_exposure_product_trend(
+        self,
+        exposure_product_linear: list[float],
+        proposed_product: float,
+    ) -> dict:
+        if len(exposure_product_linear) < 2:
+            return {
+                "trend_continues": False,
+                "trend_direction": 0,
+                "product_slope": 0.0,
+                "trend_values": [],
+            }
+
+        history_values = exposure_product_linear[-self.trend_history_window:]
+        trend_values = history_values + [float(proposed_product)]
+        deltas = np.diff(np.asarray(trend_values, dtype=np.float64))
+        signs = [
+            self.__sign_with_deadband(delta, self.exposure_product_trend_epsilon)
+            for delta in deltas
+        ]
+        nonzero_signs = [sign for sign in signs if sign != 0]
+        trend_direction = nonzero_signs[-1] if nonzero_signs else 0
+        trend_continues = (
+            len(nonzero_signs) >= self.min_trend_transitions
+            and all(sign == trend_direction for sign in nonzero_signs)
+        )
+        product_slope = self.__linear_slope(trend_values)
+
+        return {
+            "trend_continues": bool(trend_continues),
+            "trend_direction": int(trend_direction if trend_continues else 0),
+            "product_slope": float(product_slope),
+            "trend_values": trend_values,
+        }
+
+    def __should_reject_command(
+        self,
+        proposed_exposure_time: float,
+        proposed_iso: float,
+    ) -> tuple[bool, dict]:
+        proposed_product = self.__exposure_product(proposed_exposure_time, proposed_iso)
+        reward_stats = self.__reward_drop_stats(self.reward_memory)
+        trend_stats = self.__continuing_exposure_product_trend(
+            self.exposure_product_memory,
+            proposed_product,
+        )
+        should_reject = (
+            reward_stats["reward_crashed"]
+            and trend_stats["trend_continues"]
+        )
+        return bool(should_reject), {
+            **reward_stats,
+            **trend_stats,
+            "proposed_exposure_product": float(proposed_product),
+        }
+
+    def __grid_candidates(self) -> list[dict]:
+        candidates = []
+        for exp_idx, exposure_time in enumerate(self.exposure_values):
+            for iso_idx, iso in enumerate(self.iso_values):
+                product = self.__exposure_product(exposure_time, iso)
+                candidates.append({
+                    "exposure_idx": exp_idx,
+                    "iso_idx": iso_idx,
+                    "shutter_time": float(exposure_time),
+                    "iso": float(iso),
+                    "exposure_product": float(product),
+                    "rel_exposure": self.__rel_exposure_value(exposure_time, iso),
+                })
+        return candidates
+
+    def __best_recent_reference(self) -> tuple[float, float, float]:
+        if len(self.reward_memory) <= 1:
+            return (
+                float(self.exposure_time_memory[-1]),
+                float(self.iso_memory[-1]),
+                float(self.exposure_product_memory[-1]),
+            )
+
+        end_idx = len(self.reward_memory) - 1
+        start_idx = max(0, end_idx - self.selection_history_window)
+        history_indices = list(range(start_idx, end_idx))
+        best_idx = max(history_indices, key=lambda idx: self.reward_memory[idx])
+        return (
+            float(self.exposure_time_memory[best_idx]),
+            float(self.iso_memory[best_idx]),
+            float(self.exposure_product_memory[best_idx]),
+        )
+
+    def __select_recovery_parameters(self, trend_direction: int) -> dict:
+        current_exposure_time = float(self.exposure_time_memory[-1])
+        current_iso = float(self.iso_memory[-1])
+        current_product = float(self.exposure_product_memory[-1])
+        current_exp_idx = self.__closest_index(self.exposure_values, current_exposure_time)
+        current_iso_idx = self.__closest_index(self.iso_values, current_iso)
+        target_exposure_time, target_iso, target_product = self.__best_recent_reference()
+        target_exp_idx = self.__closest_index(self.exposure_values, target_exposure_time)
+        target_iso_idx = self.__closest_index(self.iso_values, target_iso)
+
+        candidates = self.__grid_candidates()
+        if trend_direction > 0:
+            recovery_candidates = [
+                candidate for candidate in candidates
+                if candidate["exposure_product"] < current_product - self.exposure_product_trend_epsilon
+            ]
+        elif trend_direction < 0:
+            recovery_candidates = [
+                candidate for candidate in candidates
+                if candidate["exposure_product"] > current_product + self.exposure_product_trend_epsilon
+            ]
+        else:
+            recovery_candidates = []
+
+        if not recovery_candidates:
+            recovery_candidates = [
+                candidate for candidate in candidates
+                if math.isclose(
+                    candidate["shutter_time"],
+                    current_exposure_time,
+                    rel_tol=0.0,
+                    abs_tol=1e-12,
+                )
+                and math.isclose(candidate["iso"], current_iso, rel_tol=0.0, abs_tol=1e-9)
+            ] or candidates
+
+        log_target_product = math.log(max(target_product, 1e-12))
+
+        def score(candidate: dict) -> tuple[float, int, int]:
+            product_distance = abs(math.log(max(candidate["exposure_product"], 1e-12)) - log_target_product)
+            target_index_distance = (
+                abs(candidate["exposure_idx"] - target_exp_idx)
+                + abs(candidate["iso_idx"] - target_iso_idx)
+            )
+            current_index_distance = (
+                abs(candidate["exposure_idx"] - current_exp_idx)
+                + abs(candidate["iso_idx"] - current_iso_idx)
+            )
+            return product_distance, target_index_distance, current_index_distance
+
+        return min(recovery_candidates, key=score)
     
     def update_parameters(
         self, 
@@ -334,27 +539,67 @@ class L1ShortTermMemoryRGBController(BaseSensorController):
             reward_value is None:
             raise ValueError("exposure_time, gain, step, and reward must be provided in control_parameters.")
         
-        is_sensor_updated = False
-        target_rel_exp = math.log2((exposure_time * 1000.) * (gain / 100.))
-        self.curr_steps += 1
-        self.curr_idx = (self.curr_idx + 1) % self.memory_length
-        self.rel_exposure_value_memory[self.curr_idx] = target_rel_exp
-        self.reward_memory[self.curr_idx] = reward_value
-        
-        ### If reward is significantly drops in short term, deny the l2 action by keeping the current sensor parameters.
-        rel_exp_linear = self.__make_queue_into_linear_list(self.rel_exposure_value_memory)
-        reward_linear = self.__make_queue_into_linear_list(self.reward_memory)
-        # Threshold for significant reward drop, can be tuned based on empirical observations
-        if not self.__judge_significant_drop(reward_linear, rel_exp_linear):
-            is_sensor_updated = True
-            self.__update_sensor_parameters(
-                control_parameters={
-                    "shutter_time": exposure_time,
-                    "iso": gain,
-                }
+        current_params = self.get_control_parameters()
+        current_exposure_time = current_params["shutter_time"]
+        current_gain = current_params["iso"]
+        self.__append_memory(
+            step=curr_step,
+            exposure_time=current_exposure_time,
+            iso=current_gain,
+            reward=reward_value,
+        )
+
+        should_reject, reject_stats = self.__should_reject_command(
+            proposed_exposure_time=exposure_time,
+            proposed_iso=gain,
+        )
+
+        action_accepted = not should_reject
+        fallback_sensor_updated = False
+        selected_parameters = {
+            "shutter_time": float(exposure_time),
+            "iso": float(gain),
+        }
+
+        if should_reject:
+            selected_parameters = self.__select_recovery_parameters(
+                trend_direction=reject_stats["trend_direction"],
             )
-        
+            selected_parameters = {
+                "shutter_time": selected_parameters["shutter_time"],
+                "iso": selected_parameters["iso"],
+            }
+            fallback_sensor_updated = (
+                not math.isclose(selected_parameters["shutter_time"], current_exposure_time, rel_tol=0.0, abs_tol=1e-12)
+                or not math.isclose(selected_parameters["iso"], current_gain, rel_tol=0.0, abs_tol=1e-9)
+            )
+            if fallback_sensor_updated:
+                self.__update_sensor_parameters(selected_parameters)
+        else:
+            self.__update_sensor_parameters(selected_parameters)
+
         return {
-            "is_sensor_updated": is_sensor_updated,
+            "is_sensor_updated": action_accepted,
+            "action_accepted": action_accepted,
+            "fallback_sensor_updated": fallback_sensor_updated,
+            "rejection_reason": "reward_drop_with_continuing_exposure_product_trend" if should_reject else None,
+            "requested_shutter_time": float(exposure_time),
+            "requested_iso": float(gain),
+            "selected_shutter_time": float(selected_parameters["shutter_time"]),
+            "selected_iso": float(selected_parameters["iso"]),
+            "selected_exposure_idx": self.__closest_index(
+                self.exposure_values,
+                selected_parameters["shutter_time"],
+            ),
+            "selected_iso_idx": self.__closest_index(self.iso_values, selected_parameters["iso"]),
+            "selected_exposure_product": self.__exposure_product(
+                selected_parameters["shutter_time"],
+                selected_parameters["iso"],
+            ),
+            "reward_drop_abs": float(reject_stats["abs_drop"]),
+            "reward_drop_rel": float(reject_stats["rel_drop"]),
+            "reward_slope": float(reject_stats["reward_slope"]),
+            "exposure_product_slope": float(reject_stats["product_slope"]),
+            "exposure_product_trend_direction": int(reject_stats["trend_direction"]),
             **self.get_control_parameters()
         }
