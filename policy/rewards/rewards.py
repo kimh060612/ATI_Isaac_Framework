@@ -56,7 +56,7 @@ def reward_test_time_augment(
         inverse_depths=inverse_depths,
         reduction=uncertainty_reduction,
     )
-    image_reward = ati_laplacian_score(rgb) # compute_composite_image_quality(rgb).score
+    image_reward = np.clip(ati_laplacian_score(rgb) / 800, 0.0, 1.0)
     # motion_blur_score(rgb)
     confidence = float(1. / (1 + uncertainty)) # Convert uncertainty to confidence (heuristic)
     total_reward = depth_weight * confidence + image_weight * image_reward
