@@ -355,6 +355,29 @@ def compute_composite_image_quality(
     )
     
 
+def compute_blur_penalty(rgb, sharpness_ref=100.0):
+    gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
+    sharpness = cv2.Laplacian(gray, cv2.CV_64F).var()
+    penalty = max(0.0, (sharpness_ref - sharpness) / sharpness_ref)
+    return penalty
+
+def rgb_to_grayscale_numpy(img: np.ndarray) -> np.ndarray:
+    if img.ndim == 2:
+        return img
+    if img.shape[-1] == 4:
+        img = img[..., :3]
+    gray = 0.2125 * img[..., 0] + 0.7154 * img[..., 1] + 0.0721 * img[..., 2]
+    if np.issubdtype(img.dtype, np.integer):
+        gray = np.clip(gray, 0, 255).astype(img.dtype)
+    return gray
+
+def gray_intensity_entropy(img: np.ndarray, num_bins=256) -> float:
+    gray_img = rgb_to_grayscale_numpy(img)
+    hist, _ = np.histogram(gray_img.flatten(), bins=num_bins, range=(0, 255), density=True)
+    hist = hist[hist > 0]
+    entropy = -np.sum(hist * np.log(hist))
+    return float(entropy)
+
 # def _compute_brisque_quality(
 #     bgr_u8: np.ndarray,
 #     brisque_model_path: str,

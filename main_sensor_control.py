@@ -203,12 +203,6 @@ if __name__ == "__main__":
     my_scene.control_light_intensity(curr_light) # Set initial light intensity
     my_scene.sensor_control(
         control_parameters={
-            # "l2_action": {"d_exp": 0, "d_iso": 0}, 
-            # "current_context": {
-            #     "lin_vel": 0.0,
-            #     "ang_vel": curr_speed,
-            #     "lux": curr_light,
-            # },
             "iso": sensor_param_space.iso_values[curr_iso_idx],
             "shutter_time": sensor_param_space.exposure_values[curr_exposure_idx]
         }
@@ -221,8 +215,8 @@ if __name__ == "__main__":
         shift_ratios=[],
         zoom_factors=[],
         gaussian_noise_stds=(0.01, 0.02, 0.05),
-        brightness_factors=(), # 0.8, 0.9
-        color_jitter_strengths=[0.1, 0.15],
+        brightness_factors=(), # 0.8, 0.9, 1.1, 1.2
+        color_jitter_strengths=(0.1, 0.15),
         disable_hflip=False,
         prediction_mode="identity",
     )
@@ -366,15 +360,6 @@ if __name__ == "__main__":
                     my_scene.control_light_intensity(curr_light)
                     my_scene.sensor_control(
                         control_parameters={
-                            # "l2_action": {
-                            #     "d_exp": update_info["action"][0], 
-                            #     "d_iso": update_info["action"][1]
-                            # }, 
-                            # "current_context": {
-                            #     "lin_vel": 0.0,
-                            #     "ang_vel": curr_speed,
-                            #     "lux": curr_light,
-                            # },
                             "iso": sensor_param_space.iso_values[curr_iso_idx],
                             "shutter_time": sensor_param_space.exposure_values[curr_exposure_idx]
                         }
