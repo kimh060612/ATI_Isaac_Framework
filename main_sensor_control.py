@@ -134,6 +134,7 @@ if __name__ == "__main__":
         name="ati_rendering_test",
         robot_config=kaya_config,
     )
+    render_config.set_agent_sensor_controller("exposure_iso_controller")
     render_config.set_rendering_mode("realtime")
     render_config.set_pathtracing_param(spp=128, num_subsamples=32)
     my_scene = ATIDepthScene(
@@ -220,8 +221,8 @@ if __name__ == "__main__":
         shift_ratios=[],
         zoom_factors=[],
         gaussian_noise_stds=(0.01, 0.02, 0.05),
-        brightness_factors=(0.8, 0.9),
-        color_jitter_strengths=[],
+        brightness_factors=(), # 0.8, 0.9
+        color_jitter_strengths=[0.1, 0.15],
         disable_hflip=False,
         prediction_mode="identity",
     )
