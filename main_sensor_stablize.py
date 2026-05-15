@@ -148,23 +148,25 @@ if __name__ == "__main__":
     ## L2 Policy and Reward Layer Setup
     set_deterministic(RANDOM_SEED)
     context_light = [200, 1000, 3000, 6000, 9000]  # Example light intensity values for the agent's context
-    context_agent_speed = [0.8, 2.0]
+    context_agent_speed = [1.5, 2.0, 1.5, 2.0, 1.5] 
     # [2.0, 2.0, 2.0, 2.0, 2.0]
     # [0.2, 0.5, 1.0, 1.5, 2.0]  # Example speed values for the agent's context
-    trajectory = build_step_context_trajectory(
-        light_values=[1000, 1000],
-        speed_values=[s * RAD_COEFF for s in context_agent_speed],
-        light_hold_steps=args.lap_period * 10,
-        speed_hold_steps=args.lap_period * 10,
-        speed_phase_offset_steps=0,
-    ) 
-    # light_values=[1000, 1000, 1000, 1000, 1000],
-    # speed_values=[s * RAD_COEFF for s in context_agent_speed],
-    # light_transition_steps=args.lap_period * 20,
-    # speed_transition_steps=args.lap_period * 5,
-    # light_hold_steps=args.lap_period,
-    # speed_hold_steps=args.lap_period,
-    # speed_phase_offset_steps=args.lap_period,
+    trajectory = build_default_context_trajectory(
+        light_values=[1000, 1000, 1000, 1000, 1000],
+        speed_values=[s * np.pi / 12 for s in context_agent_speed],
+        light_transition_steps=args.lap_period * 20,
+        speed_transition_steps=args.lap_period * 5,
+        light_hold_steps=args.lap_period,
+        speed_hold_steps=args.lap_period,
+        speed_phase_offset_steps=args.lap_period,
+    )
+    # trajectory = build_step_context_trajectory(
+    #     light_values=[1000, 1000],
+    #     speed_values=[s * RAD_COEFF for s in context_agent_speed],
+    #     light_hold_steps=args.lap_period * 10,
+    #     speed_hold_steps=args.lap_period * 10,
+    #     speed_phase_offset_steps=0,
+    # ) 
     
     sensor_param_space = SensorParamSpace()
     l2_policy = L2DisjointLinUCBSafeBoundedCamPolicy(

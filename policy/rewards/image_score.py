@@ -404,40 +404,32 @@ def ati_laplacian_score(rgb_img: np.ndarray) -> float:
     )
     return float(lap.var())
 
-# def _compute_brisque_quality(
-#     bgr_u8: np.ndarray,
-#     brisque_model_path: str,
-#     brisque_range_path: str,
-#     brisque_score_clip: Tuple[float, float] = (0.0, 100.0),
-# ) -> Tuple[float, float]:
-#     """
-#     Computes raw BRISQUE and maps it heuristically to 0~1 quality.
+def to_uint8_rgb(img):
+    img = np.asarray(img)
+    if img.dtype == np.uint8:
+        return img
+    img = img.astype(np.float32)
+    if img.max() <= 1.5:
+        img = img * 255.0
+    return np.clip(img, 0, 255).astype(np.uint8)
 
-#     Requires OpenCV contrib:
-#         pip install opencv-contrib-python
+def saturation_penalty(rgb, low_thr=5, high_thr=250):
+    img = to_uint8_rgb(rgb)
+    gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+    low = np.mean(gray <= low_thr)
+    high = np.mean(gray >= high_thr)
+    return float(np.clip(low + high, 0.0, 1.0))
 
-#     Raw BRISQUE is lower-is-better.
-#     We convert it as:
-#         brisque_quality = 1 - normalized(raw_brisque)
-#     """
-#     if not hasattr(cv2, "quality"):
-#         raise ImportError(
-#             "OpenCV quality module not found. Install `opencv-contrib-python`."
-#         )
+def grayscale_entropy(rgb, bins=256, eps=1e-12):
+    img = to_uint8_rgb(rgb)
+    gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
 
-#     raw = cv2.quality.QualityBRISQUE_compute(
-#         bgr_u8, brisque_model_path, brisque_range_path
-#     )
+    hist, _ = np.histogram(gray, bins=bins, range=(0, 256))
+    p = hist.astype(np.float64)
+    p = p / (p.sum() + eps)
 
-#     # OpenCV returns cv::Scalar-like output
-#     if isinstance(raw, (tuple, list, np.ndarray)):
-#         raw_brisque = float(np.array(raw).ravel()[0])
-#     else:
-#         raw_brisque = float(raw)
+    h = -np.sum(p * np.log2(p + eps))
+    return float(h / np.log2(bins))
 
-#     lo, hi = brisque_score_clip
-#     raw_clamped = min(max(raw_brisque, lo), hi)
-#     brisque_quality = 1.0 - (raw_clamped - lo) / max(1e-8, (hi - lo))
-#     brisque_quality = float(np.clip(brisque_quality, 0.0, 1.0))
-
-#     return raw_brisque, brisque_quality
+def target_entropy_score(entropy, target=0.70, sigma=0.18):
+    return float(np.exp(-((entropy - target) ** 2) / (2 * sigma ** 2)))

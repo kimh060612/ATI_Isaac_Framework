@@ -44,9 +44,6 @@ parser.add_argument("--data_path", type=str, default="/issac-sim/dataset/experim
 parser.add_argument("--max_laps", type=int, default=600, help="Maximum number of laps (context changes) to run in the simulation")
 parser.add_argument("--lap_period", type=int, default=30, help="Number of steps per lap (context change period)")
 parser.add_argument("--exp_ratio", type=float, default=0.5, help="Ratio of exploration vs exploitation for the L2 policy's action selection")
-parser.add_argument("--policy_type", type=str, default="disjoint_ucb", choices=["disjoint_ucb", "context_advantage_disjoint_ucb"], help="L2 policy class to use for camera control.")
-parser.add_argument("--advantage_normalize_by_std", action="store_true", help="Normalize context advantage rewards by the context reward standard deviation.")
-parser.add_argument("--advantage_clip", type=float, default=1.0, help="Absolute clipping value for learned advantage rewards.")
 args = parser.parse_args()
 
 RANDOM_SEED = 42
@@ -96,8 +93,8 @@ def build_observation_info(
             "rgb": np.array(rgb_image),
             "inverse_depths": pred_depths,
             "uncertainty_reduction": "mean",
-            "image_weight": 0.1,
-            "depth_weight": 0.9,
+            "image_weight": 0.4,
+            "depth_weight": 0.6,
         }
     elif reward_type == "oracle":
         return {
@@ -156,23 +153,27 @@ if __name__ == "__main__":
     ## L2 Policy and Reward Layer Setup
     set_deterministic(RANDOM_SEED)
     context_light = [200, 1000, 3000, 6000, 9000]  # Example light intensity values for the agent's context
-    context_agent_speed = [0.8, 2.0]
+    context_agent_speed = [1.5, 2.0, 1.5, 2.0, 1.5]
     # [2.0, 2.0, 2.0, 2.0, 2.0]
     # [0.2, 0.5, 1.0, 1.5, 2.0]  # Example speed values for the agent's context
-    trajectory = build_step_context_trajectory(
-        light_values=[1000, 1000],
-        speed_values=[s * RAD_COEFF for s in context_agent_speed],
-        light_hold_steps=args.lap_period * 10,
-        speed_hold_steps=args.lap_period * 10,
-        speed_phase_offset_steps=0,
-    ) 
+    trajectory = build_default_context_trajectory(
+        light_values=[1000, 1000, 1000, 1000, 1000],
+        speed_values=[s * np.pi / 12 for s in context_agent_speed],
+        light_transition_steps=args.lap_period * 20,
+        speed_transition_steps=args.lap_period * 5,
+        light_hold_steps=args.lap_period,
+        speed_hold_steps=args.lap_period,
+        speed_phase_offset_steps=args.lap_period,
+    )
+    # trajectory = build_step_context_trajectory(
+    #     light_values=[1000, 1000],
+    #     speed_values=[s * RAD_COEFF for s in context_agent_speed],
+    #     light_hold_steps=args.lap_period * 10,
+    #     speed_hold_steps=args.lap_period * 10,
+    #     speed_phase_offset_steps=0,
+    # ) 
     
     sensor_param_space = SensorParamSpace()
-    policy_cls = (
-        L2ContextNormalizedDisjointLinUCBRGBCamPolicy
-        if args.policy_type == "context_advantage_disjoint_ucb"
-        else L2DisjointLinUCBRGBCamPolicy
-    )
     policy_kwargs = {
         "sensor_names": "agent_camera",
         "sensor_config": sensor_param_space,
@@ -180,14 +181,7 @@ if __name__ == "__main__":
         "alpha": args.exp_ratio, # Exploration vs Exploitation ratio for LinUCB
         "random_seed": RANDOM_SEED,
     }
-    if policy_cls is L2ContextNormalizedDisjointLinUCBRGBCamPolicy:
-        policy_kwargs.update(
-            {
-                "normalize_by_std": args.advantage_normalize_by_std,
-                "advantage_clip": args.advantage_clip,
-            }
-        )
-    l2_policy = policy_cls(**policy_kwargs)
+    l2_policy = L2DisjointLinUCBRGBCamPolicy(**policy_kwargs)
     context = trajectory.value_at(0)
     curr_light = context["light_intensity"]
     curr_speed = context["angular_velocity"]

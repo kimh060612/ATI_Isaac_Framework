@@ -283,7 +283,7 @@ class L2DisjointLinUCBRGBCamPolicy(BaseCMABPolicy):
         self.action_to_index = {action: idx for idx, action in enumerate(all_actions)}
 
         # Feature dimension:
-        # [1, w, log_light] => , action_denied
+        # [1, w, log_light]
         dim_context = 3
 
         super().__init__(
@@ -323,25 +323,18 @@ class L2DisjointLinUCBRGBCamPolicy(BaseCMABPolicy):
         self,
         angular_velocity: float,
         light_intensity: float,
-        # action_accepted: int
-        # exposure_idx: int,
-        # iso_idx: int,
     ) -> np.ndarray:
         """
         x = [1, w, log(light), action_accepted]
         """
         if light_intensity <= 0:
             raise ValueError("light_intensity must be > 0 because log(light) is used.")
-
-        # e_norm = self._normalize_index(exposure_idx, self.n_exposure - 1)
-        # iso_norm = self._normalize_index(iso_idx, self.n_iso - 1)
-
+        
         x = np.array(
             [
                 1.0,
                 float(angular_velocity),
                 float(np.log(light_intensity)),
-                # float(action_accepted),
             ],
             dtype=np.float64,
         )
@@ -396,9 +389,6 @@ class L2DisjointLinUCBRGBCamPolicy(BaseCMABPolicy):
         context = self.build_context(
             angular_velocity=context_information["angular_velocity"],
             light_intensity=context_information["light_intensity"],
-            # action_accepted=int(context_information["action_accepted"]),
-            # exposure_idx=context_information["exposure_idx"],
-            # iso_idx=context_information["iso_idx"],
         )
 
         candidates = self.valid_actions(
@@ -521,7 +511,6 @@ class L2DisjointLinUCBRGBCamPolicy(BaseCMABPolicy):
         record = {
             "angular_velocity": context_information["angular_velocity"],
             "light_intensity": context_information["light_intensity"],
-            # "action_accepted": int(context_information["action_accepted"]),
             "exposure_idx": context_information["exposure_idx"],
             "iso_idx": context_information["iso_idx"],
             "action": action,

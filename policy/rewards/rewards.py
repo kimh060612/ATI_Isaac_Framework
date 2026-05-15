@@ -1,5 +1,6 @@
 from policy.rewards.utils import *
 from policy.rewards.image_score import *
+from policy.rewards.depth_score import *
 from l3_perception_layer import TTATransform
 from PIL import Image
 
@@ -58,13 +59,21 @@ def reward_test_time_augment(
     )
     image_reward = np.clip(ati_laplacian_score(rgb) / 800, 0.0, 1.0)
     # motion_blur_score(rgb)
+    ent = grayscale_entropy(rgb)
+    ent_score = target_entropy_score(ent, target=0.70, sigma=0.18)
+    sat_pen = saturation_penalty(rgb)
+    smooth = edge_aware_depth_smoothness_score(rgb, inverse_depths[0])
+    align = edge_alignment_score(rgb, inverse_depths[0])
     confidence = float(1. / (1 + uncertainty)) # Convert uncertainty to confidence (heuristic)
-    total_reward = depth_weight * confidence + image_weight * image_reward
+    depth_reward = 0.5 * confidence + 0.25 * smooth + 0.25 * align
+    image_reward = 0.4 * image_reward + 0.4 * ent_score + 0.2 * (1 - sat_pen) 
+    
+    total_reward = depth_weight * depth_reward + image_weight * image_reward
 
     return {
         "reward": float(total_reward),
         "image_reward": float(image_reward),
-        "depth_reward": float(confidence),
+        "depth_reward": float(depth_reward),
         "uncertainty": float(uncertainty),
     }
 
