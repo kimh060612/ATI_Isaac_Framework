@@ -56,7 +56,7 @@ def initialize_wandb(context_len, max_laps, max_steps, exp_name=None):
         project="ati_sensor_control_prototype",
         name=exp_name,
         config={
-            "policy_type": args.policy_type,
+            "policy_type": "L2DisjointLinUCBRGBCamPolicy",
             "turn_per_lap": context_len,
             "max_laps": max_laps,
             "max_steps": max_steps,
