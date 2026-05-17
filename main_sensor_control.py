@@ -345,6 +345,7 @@ if __name__ == "__main__":
                             "policy/update_advantage": float(update_info.get("advantage", update_info["reward"])),
                             "policy/update_baseline": float(update_info.get("baseline", 0.0)),
                             "policy/update_baseline_count": float(update_info.get("baseline_count", 0)),
+                            "policy/action_idx": float(update_info["action_idx"]),
                         } if update_info is not None else {}),
                         **({
                             "policy/next_light_intensity": float(next_context["light_intensity"]),

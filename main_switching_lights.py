@@ -328,6 +328,7 @@ if __name__ == "__main__":
                             "policy/update_reward": float(update_info["reward"]),
                             "policy/update_action_delta_exposure": float(update_info["action"][0]),
                             "policy/update_action_delta_iso": float(update_info["action"][1]),
+                            "policy/action_idx": float(update_info["action_idx"]),
                         } if update_info is not None else {}),
                         **({
                             "policy/next_light_intensity": float(next_context["light_intensity"]),
