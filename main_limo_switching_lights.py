@@ -123,8 +123,8 @@ def build_observation_info(reward_type: str, rgb_image: np.ndarray, pred_depths,
             "rgb": np.array(rgb_image),
             "inverse_depths": pred_depths,
             "uncertainty_reduction": "mean",
-            "image_weight": 0.0,
-            "depth_weight": 1.0,
+            "image_weight": 0.4,
+            "depth_weight": 0.6,
         }
     if reward_type == "oracle":
         return {
