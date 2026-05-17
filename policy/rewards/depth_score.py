@@ -69,3 +69,11 @@ def edge_aware_depth_smoothness_score(rgb, depth):
     # loss를 score로 변환
     score = np.exp(-5.0 * smooth_loss)
     return float(np.clip(score, 0.0, 1.0))
+
+def depth_entropy_score(depth):
+    d = np.asarray(depth, dtype=np.float32)
+    d = normalize01(d)
+    hist, _ = np.histogram(d.flatten(), bins=256, range=(0.0, 1.0))
+    hist = hist / (hist.sum() + 1e-8)
+    ent = -np.sum(hist * np.log(hist + 1e-8))
+    return float(ent / np.log(256))

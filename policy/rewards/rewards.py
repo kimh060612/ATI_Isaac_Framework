@@ -64,8 +64,10 @@ def reward_test_time_augment(
     sat_pen = saturation_penalty(rgb)
     smooth = edge_aware_depth_smoothness_score(rgb, inverse_depths[0])
     align = edge_alignment_score(rgb, inverse_depths[0])
+    d_ent = depth_entropy_score(inverse_depths[0])
+    d_ent_score = target_entropy_score(d_ent, target=0.70, sigma=0.18)
     confidence = float(1. / (1 + uncertainty)) # Convert uncertainty to confidence (heuristic)
-    depth_reward = 0.5 * confidence + 0.25 * smooth + 0.25 * align
+    depth_reward = 0.4 * confidence + 0.1 * smooth + 0.25 * align + 0.25 * d_ent_score
     image_reward = 0.4 * image_reward + 0.4 * ent_score + 0.2 * (1 - sat_pen) 
     
     total_reward = depth_weight * depth_reward + image_weight * image_reward
