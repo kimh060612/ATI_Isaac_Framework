@@ -603,3 +603,12 @@ class L1ShortTermMemoryRGBController(BaseSensorController):
             "exposure_product_trend_direction": int(reject_stats["trend_direction"]),
             **self.get_control_parameters()
         }
+
+
+class L1ShortTermMemorySafeController(BaseSensorController):
+    def __init__(self):
+        pass
+    
+    def update_parameters(self):
+        
+        pass
