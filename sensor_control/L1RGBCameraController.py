@@ -612,3 +612,203 @@ class L1ShortTermMemorySafeController(BaseSensorController):
     def update_parameters(self):
         
         pass
+    
+class L1SACClampingController(BaseSensorController):
+    """
+    L1 safety layer for continuous SAC camera deltas.
+
+    The L2 SAC policy proposes physical deltas:
+    - delta_exposure: seconds
+    - delta_iso: ISO units
+
+    This controller turns the delta into an absolute camera command while
+    enforcing valid exposure/ISO bounds and optional per-update step limits.
+    """
+    def __init__(
+        self,
+        sensor_name,
+        camera,
+        camera_prim,
+        camera_fps,
+        control_parameters: Dict[str, Union[float, int]] | None = None,
+    ):
+        super().__init__(
+            sensor_name=sensor_name,
+            camera=camera,
+            camera_prim=camera_prim,
+            camera_fps=camera_fps,
+            control_parameters=control_parameters,
+        )
+        self.exposure_min = 0.001
+        self.exposure_max = 0.016
+        self.iso_min = 100.0
+        self.iso_max = 3200.0
+        self.max_delta_exposure = 0.004
+        self.max_delta_iso = 400.0
+        self.__update_sensor_parameters(self.control_parameters)
+
+    def __update_sensor_parameters(self, control_parameters: Dict[str, Union[float, int]] | None):
+        control_parameters = control_parameters or {}
+        if "iso" in control_parameters and control_parameters["iso"] is not None:
+            self._set_iso(control_parameters["iso"])
+        if "shutter_time" in control_parameters and control_parameters["shutter_time"] is not None:
+            self._set_shutter_time(control_parameters["shutter_time"])
+        if "aperture" in control_parameters and control_parameters["aperture"] is not None:
+            self._set_aperture(control_parameters["aperture"])
+
+    @staticmethod
+    def _clip_float(value: float, low: float, high: float) -> float:
+        return float(np.clip(float(value), float(low), float(high)))
+
+    @staticmethod
+    def _read_action_value(action: dict, *keys: str, default: float = 0.0) -> float:
+        for key in keys:
+            if key in action and action[key] is not None:
+                return float(action[key])
+        return float(default)
+
+    def _build_target_from_sac_action(self, control_parameters: dict) -> dict:
+        current_params = self.get_control_parameters()
+        current_exposure = float(current_params.get("shutter_time", 0.008))
+        current_iso = float(current_params.get("iso", 400.0))
+
+        sac_action = (
+            control_parameters.get("sac_action")
+            or control_parameters.get("l2_action")
+            or {}
+        )
+        delta_exposure = self._read_action_value(
+            sac_action,
+            "delta_exposure",
+            "d_exposure",
+            "d_exp",
+            default=0.0,
+        )
+        delta_iso = self._read_action_value(
+            sac_action,
+            "delta_iso",
+            "d_iso",
+            default=0.0,
+        )
+
+        max_delta_exposure = float(control_parameters.get("max_delta_exposure", self.max_delta_exposure))
+        max_delta_iso = float(control_parameters.get("max_delta_iso", self.max_delta_iso))
+        clipped_delta_exposure = self._clip_float(
+            delta_exposure,
+            -abs(max_delta_exposure),
+            abs(max_delta_exposure),
+        )
+        clipped_delta_iso = self._clip_float(
+            delta_iso,
+            -abs(max_delta_iso),
+            abs(max_delta_iso),
+        )
+
+        requested_exposure = current_exposure + delta_exposure
+        requested_iso = current_iso + delta_iso
+        step_limited_exposure = current_exposure + clipped_delta_exposure
+        step_limited_iso = current_iso + clipped_delta_iso
+        selected_exposure = self._clip_float(
+            step_limited_exposure,
+            control_parameters.get("exposure_min", self.exposure_min),
+            control_parameters.get("exposure_max", self.exposure_max),
+        )
+        selected_iso = self._clip_float(
+            step_limited_iso,
+            control_parameters.get("iso_min", self.iso_min),
+            control_parameters.get("iso_max", self.iso_max),
+        )
+
+        return {
+            "current_exposure": current_exposure,
+            "current_iso": current_iso,
+            "requested_delta_exposure": float(delta_exposure),
+            "requested_delta_iso": float(delta_iso),
+            "clipped_delta_exposure": float(selected_exposure - current_exposure),
+            "clipped_delta_iso": float(selected_iso - current_iso),
+            "requested_shutter_time": float(requested_exposure),
+            "requested_iso": float(requested_iso),
+            "selected_shutter_time": float(selected_exposure),
+            "selected_iso": float(selected_iso),
+        }
+
+    def _build_target_from_absolute_command(self, control_parameters: dict) -> dict:
+        current_params = self.get_control_parameters()
+        current_exposure = float(current_params.get("shutter_time", 0.008))
+        current_iso = float(current_params.get("iso", 400.0))
+        requested_exposure = float(control_parameters.get("shutter_time", current_exposure))
+        requested_iso = float(control_parameters.get("iso", current_iso))
+        selected_exposure = self._clip_float(
+            requested_exposure,
+            control_parameters.get("exposure_min", self.exposure_min),
+            control_parameters.get("exposure_max", self.exposure_max),
+        )
+        selected_iso = self._clip_float(
+            requested_iso,
+            control_parameters.get("iso_min", self.iso_min),
+            control_parameters.get("iso_max", self.iso_max),
+        )
+        return {
+            "current_exposure": current_exposure,
+            "current_iso": current_iso,
+            "requested_delta_exposure": float(requested_exposure - current_exposure),
+            "requested_delta_iso": float(requested_iso - current_iso),
+            "clipped_delta_exposure": float(selected_exposure - current_exposure),
+            "clipped_delta_iso": float(selected_iso - current_iso),
+            "requested_shutter_time": float(requested_exposure),
+            "requested_iso": float(requested_iso),
+            "selected_shutter_time": float(selected_exposure),
+            "selected_iso": float(selected_iso),
+        }
+
+    def update_parameters(
+        self,
+        control_parameters: Dict[str, Union[float, int, dict]] | None,
+    ):
+        control_parameters = control_parameters or {}
+        if "sac_action" in control_parameters or "l2_action" in control_parameters:
+            target = self._build_target_from_sac_action(control_parameters)
+        else:
+            target = self._build_target_from_absolute_command(control_parameters)
+
+        changed = (
+            not math.isclose(
+                target["selected_shutter_time"],
+                target["current_exposure"],
+                rel_tol=0.0,
+                abs_tol=1e-12,
+            )
+            or not math.isclose(
+                target["selected_iso"],
+                target["current_iso"],
+                rel_tol=0.0,
+                abs_tol=1e-9,
+            )
+        )
+        self.__update_sensor_parameters(
+            {
+                "shutter_time": target["selected_shutter_time"],
+                "iso": target["selected_iso"],
+            }
+        )
+        exposure_was_clamped = not math.isclose(
+            target["requested_shutter_time"],
+            target["selected_shutter_time"],
+            rel_tol=0.0,
+            abs_tol=1e-12,
+        )
+        iso_was_clamped = not math.isclose(
+            target["requested_iso"],
+            target["selected_iso"],
+            rel_tol=0.0,
+            abs_tol=1e-9,
+        )
+        return {
+            "is_sensor_updated": bool(changed),
+            "action_accepted": True,
+            "action_clamped": bool(exposure_was_clamped or iso_was_clamped),
+            "exposure_was_clamped": bool(exposure_was_clamped),
+            "iso_was_clamped": bool(iso_was_clamped),
+            **target,
+            **self.get_control_parameters(),
+        }

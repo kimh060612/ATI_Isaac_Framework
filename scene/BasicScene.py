@@ -7,21 +7,14 @@ from isaacsim.simulation_app import SimulationApp
 import carb
 import carb.settings
 import numpy as np
-import omni.usd
 from pxr import UsdGeom, Gf, Sdf, UsdPhysics, UsdLux, PhysxSchema
-import omni.replicator.core as rep
 
 ## RGB-D Sensor
-import omni.isaac.core.utils.numpy.rotations as rot_utils
 import omni.isaac.core.utils.prims as prim_utils
 import omni.timeline
-import cv2
-import carb
-import numpy as np
 import random
 import os
 
-from isaacsim.core.utils.extensions import enable_extension
 from isaacsim.storage.native import get_assets_root_path
 from isaacsim.core.utils.stage import add_reference_to_stage
 from isaacsim.core.utils.viewports import set_camera_view
@@ -32,8 +25,9 @@ from isaacsim.sensors.camera import Camera
 from isaacsim.sensors.physics import IMUSensor
 
 from ati_config import ATIBaseConfig, DEBUG
-from sensor_control import BaseSensorController, ShutterExposureSensorController, L1RGBCameraController, L1ShortTermMemoryRGBController
+from sensor_control import BaseSensorController, ShutterExposureSensorController, L1RGBCameraController, L1ShortTermMemoryRGBController, L1SACClampingController
 from ati_utils.iso_noise_processing import add_d455_noise
+from .LightSensor import DomeLightLuxProxy
 from tqdm import tqdm
 
 class BaseScene(metaclass=ABCMeta):
@@ -41,6 +35,7 @@ class BaseScene(metaclass=ABCMeta):
         "exposure_iso_controller": ShutterExposureSensorController,
         "l1_naive_controller": L1RGBCameraController,
         "l1_short_term_memory_controller": L1ShortTermMemoryRGBController,
+        "l1_sac_clamping_controller": L1SACClampingController,
         "name_of_controller": None, # Replace with actual example controller class
     }
     
@@ -94,6 +89,9 @@ class BaseScene(metaclass=ABCMeta):
         
         self.cameras: Dict[str, Camera] = {}
         self.sensor_controllers: Dict[str, BaseSensorController] = {}
+        self.agent_imu = None
+        self.agent_imu_prim_path = None
+        self.light_lux_proxy = None
         self.robot_agent = None
         self.agent = None
         self.n_rendered_frames = 0
@@ -293,6 +291,11 @@ class BaseScene(metaclass=ABCMeta):
         """
         rendered_data = self.__render_time_control(render=render)
         rendered_data["imu_sensor"] = self.agent_imu.get_current_frame()
+        rendered_data["light_meter"] = self.measure_light_intensity()
+        rendered_data["canonical_context"] = self.get_policy_context(
+            imu_frame=rendered_data["imu_sensor"],
+            light_meter_info=rendered_data["light_meter"],
+        )
         
         if self.world.is_stopped() and not self.__reset_needed:
             self.__reset_needed = True
@@ -334,11 +337,6 @@ class BaseScene(metaclass=ABCMeta):
     
     
     def control_light_intensity(self, intensity):
-        # Previous outdoor-style light control kept for reference.
-        # sun_prim = self.world.stage.GetPrimAtPath("/World/ExtraSun")
-        # sun = UsdLux.DistantLight(sun_prim)
-        # sun.GetIntensityAttr().Set(intensity)
-
         light_paths = list(getattr(self, "indoor_light_paths", []))
         if not light_paths:
             light_paths = [
@@ -357,6 +355,131 @@ class BaseScene(metaclass=ABCMeta):
             if not intensity_attr:
                 intensity_attr = light.CreateIntensityAttr()
             intensity_attr.Set(float(intensity))
+
+    @staticmethod
+    def _as_imu_vector(value) -> np.ndarray | None:
+        if value is None:
+            return None
+        try:
+            arr = np.asarray(value, dtype=np.float64).reshape(-1)
+        except Exception:
+            return None
+        if arr.size == 0 or not np.all(np.isfinite(arr)):
+            return None
+        if arr.size < 3:
+            return None
+        return arr[:3]
+
+    @classmethod
+    def _extract_frame_vector(cls, frame, candidate_keys: tuple[str, ...]) -> np.ndarray:
+        if not isinstance(frame, dict):
+            return np.zeros(3, dtype=np.float64)
+
+        for key in candidate_keys:
+            if key in frame:
+                vector = cls._as_imu_vector(frame.get(key))
+                if vector is not None:
+                    return vector
+
+        normalized_candidates = tuple(candidate.lower() for candidate in candidate_keys)
+        for key, value in frame.items():
+            key_lower = str(key).lower()
+            if any(candidate in key_lower for candidate in normalized_candidates):
+                vector = cls._as_imu_vector(value)
+                if vector is not None:
+                    return vector
+        return np.zeros(3, dtype=np.float64)
+
+    def get_imu_motion_context(self, imu_frame: dict | None = None) -> dict:
+        if imu_frame is None and getattr(self, "agent_imu", None) is not None:
+            imu_frame = self.agent_imu.get_current_frame()
+        acceleration_vector = self._extract_frame_vector(
+            imu_frame,
+            (
+                "linear_acceleration",
+                "lin_acc",
+                "acceleration",
+                "accelerometer",
+            ),
+        )
+        gyro_vector = self._extract_frame_vector(
+            imu_frame,
+            (
+                "angular_velocity",
+                "ang_vel",
+                "gyro",
+                "gyroscope",
+            ),
+        )
+        acceleration_magnitude = float(np.linalg.norm(acceleration_vector[:2]))
+        gyro_magnitude = float(abs(gyro_vector[2]))
+        return {
+            "acceleration_magnitude": float(acceleration_magnitude),
+            "gyro_magnitude": float(gyro_magnitude),
+        }
+
+    def _get_scene_light_intensity(self) -> float:
+        values = []
+        for light_path in getattr(self, "indoor_light_paths", []):
+            light_prim = self.world.stage.GetPrimAtPath(light_path)
+            if not light_prim.IsValid():
+                continue
+            light = UsdLux.LightAPI(light_prim)
+            intensity_attr = light.GetIntensityAttr()
+            if not intensity_attr:
+                continue
+            value = intensity_attr.Get()
+            if value is not None:
+                values.append(float(value))
+        if not values:
+            return 0.0
+        return float(np.mean(values))
+
+    def measure_light_intensity(self) -> dict:
+        scene_light_intensity = self._get_scene_light_intensity()
+        estimated_lux = scene_light_intensity
+        source = "scene_light_intensity"
+        lux_proxy_info = {}
+
+        if self.light_lux_proxy is not None:
+            try:
+                lux_proxy_info = self.light_lux_proxy.compute()
+                has_active_dome_light = any(
+                    float(getattr(light, "intensity", 0.0)) * (2.0 ** float(getattr(light, "exposure", 0.0))) > 0.0
+                    for light in lux_proxy_info.get("dome_lights", [])
+                )
+                if has_active_dome_light:
+                    estimated_lux = float(lux_proxy_info.get("illumination_proxy", 0.0))
+                    source = "dome_light_lux_proxy"
+            except Exception as exc:
+                if DEBUG:
+                    print(f"[LightSensor] DomeLightLuxProxy failed: {exc}")
+
+        estimated_lux = max(float(estimated_lux), 1.0)
+        return {
+            "light_intensity": float(estimated_lux),
+            "relative_luminance": float(estimated_lux),
+            "scene_light_intensity": float(scene_light_intensity),
+            "dome_light_illumination_proxy": float(lux_proxy_info.get("illumination_proxy", 0.0)),
+            "dome_light_sky_visibility": float(lux_proxy_info.get("sky_visibility", 0.0)),
+            "dome_light_count": int(lux_proxy_info.get("num_dome_lights", 0)),
+            "source": source,
+        }
+
+    def get_policy_context(
+        self,
+        imu_frame: dict | None = None,
+        light_meter_info: dict | None = None,
+    ) -> dict:
+        motion_context = self.get_imu_motion_context(imu_frame)
+        if light_meter_info is None:
+            light_meter_info = self.measure_light_intensity()
+        return {
+            **motion_context,
+            "light_intensity": float(light_meter_info.get("light_intensity", 1.0)),
+            "light_meter_relative_luminance": float(light_meter_info.get("relative_luminance", 0.0)),
+            "light_meter_scene_intensity": float(light_meter_info.get("scene_light_intensity", 0.0)),
+        }
     
     def __check_valid_synthetic_data(self, data: dict):
         if not data:
@@ -626,6 +749,97 @@ class BaseScene(metaclass=ABCMeta):
             iso=self.sensor_controllers[sensor_name].get_control_parameters().get("iso", 100)
         ) 
         return rendered_data
+
+    def _resolve_agent_base_link_path(self) -> str:
+        """
+        Resolve the articulation link that should own the canonical robot IMU.
+        Keeping this IMU directly below the moving base link avoids relying on
+        sensor-asset internals such as RealSense's nested RSD455 prim.
+        """
+        candidates = [
+            f"{self.agent_prim_path}/base_link",
+            f"{self.agent_prim_path}/chassis_link",
+            f"{self.agent_prim_path}/body",
+            self.agent_prim_path,
+        ]
+        for candidate in candidates:
+            prim = self.world.stage.GetPrimAtPath(candidate)
+            if prim.IsValid():
+                return candidate
+        raise RuntimeError(
+            "Could not resolve a valid agent base-link prim for IMU attachment. "
+            f"Tried: {candidates}"
+        )
+
+    def _remove_existing_agent_imus(self, keep_path: str | None = None) -> list[str]:
+        candidate_paths = set()
+
+        configured_imu_path = getattr(self.robot_config, "agent_imu_prim_path", None)
+        if configured_imu_path:
+            candidate_paths.add(configured_imu_path)
+
+        for prim in self.world.stage.Traverse():
+            prim_path = prim.GetPath().pathString
+            if prim_path == keep_path or not prim_path.startswith(self.agent_prim_path):
+                continue
+
+            path_lower = prim_path.lower()
+            type_name = str(prim.GetTypeName())
+            if type_name == "IsaacImuSensor" or "imu_sensor" in path_lower or path_lower.endswith("/imu"):
+                candidate_paths.add(prim_path)
+
+        removed_paths = []
+        for imu_path in sorted(path for path in candidate_paths if path != keep_path):
+            prim = self.world.stage.GetPrimAtPath(imu_path)
+            if prim is None or not prim.IsValid():
+                continue
+
+            removed = False
+            try:
+                removed = bool(self.world.stage.RemovePrim(Sdf.Path(imu_path)))
+            except Exception:
+                pass
+
+            remaining_prim = self.world.stage.GetPrimAtPath(imu_path)
+            if not removed and remaining_prim.IsValid():
+                try:
+                    remaining_prim.SetActive(False)
+                    removed = True
+                except Exception:
+                    pass
+            if removed:
+                removed_paths.append(imu_path)
+
+        if removed_paths:
+            print(f"[IMU] Removed existing agent IMU sensors: {removed_paths}")
+        return removed_paths
+
+    def _initialize_agent_imus(self):
+        base_link_path = self._resolve_agent_base_link_path()
+        canonical_imu_path = f"{base_link_path}/AtiBaseImu_Sensor"
+        self._remove_existing_agent_imus(keep_path=canonical_imu_path)
+        self.agent_imu_prim_path = canonical_imu_path
+        self.agent_imu = self.world.scene.add(
+            IMUSensor(
+                prim_path=self.agent_imu_prim_path,
+                name="agent_base_imu",
+                frequency=int(1.0 / self._simulation_dt),
+                translation=np.array([0, 0, 0]),
+                orientation=np.array([1, 0, 0, 0]),
+                linear_acceleration_filter_size=10,
+                angular_velocity_filter_size=10,
+                orientation_filter_size=10,
+            )
+        )
+        print(f"[IMU] Canonical base-link IMU: {self.agent_imu_prim_path}")
+
+    def _initialize_light_sensor(self):
+        agent_camera = self.cameras.get("agent_camera")
+        if agent_camera is None:
+            self.light_lux_proxy = None
+            return
+        self.light_lux_proxy = DomeLightLuxProxy(camera_prim_path=agent_camera.prim_path)
+        print(f"[LightSensor] DomeLightLuxProxy camera: {agent_camera.prim_path}")
     
     def _define_robot_agent(
         self,
@@ -705,17 +919,8 @@ class BaseScene(metaclass=ABCMeta):
             self.assets_root_path + self.agent_camera_usd_path,
             self.config.require_external_camera
         )
-        
-        self.agent_imu = IMUSensor(
-            prim_path=self.robot_config.agent_imu_prim_path,
-            name="agent_imu",
-            frequency=int(1. / self._simulation_dt),
-            translation=np.array([0, 0, 0]),
-            orientation=np.array([1, 0, 0, 0]),
-            linear_acceleration_filter_size = 10,
-            angular_velocity_filter_size = 10,
-            orientation_filter_size = 10,
-        )
+        self._initialize_light_sensor()
+        self._initialize_agent_imus()
         
         # --- Create overhead camera ---
         for e_cam_props in self.external_cameras:
@@ -911,7 +1116,7 @@ class BaseScene(metaclass=ABCMeta):
             annotator_device="cpu"
         )
         return self.cameras["agent_camera"]
-    
+
     def _attach_annotators_to_camera(self, camera_name:str):
         camera = self.cameras[camera_name]
         camera.add_rgb_to_frame()

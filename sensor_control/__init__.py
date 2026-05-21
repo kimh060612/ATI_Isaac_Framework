@@ -1,3 +1,3 @@
 from .BaseSensorController import BaseSensorController
 from .ShutterExposureSensorController import ShutterExposureSensorController
-from .L1RGBCameraController import L1RGBCameraController, L1ShortTermMemoryRGBController
+from .L1RGBCameraController import L1RGBCameraController, L1ShortTermMemoryRGBController, L1SACClampingController
