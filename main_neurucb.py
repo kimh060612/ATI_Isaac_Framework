@@ -260,6 +260,8 @@ def main() -> None:
         policy_type=args.policy_variant,
         l3_model_name=l3_mde_config.model_name,
         context_len=args.lap_period,
+        max_laps=args.num_episode * len(build_context_ranges(args)),
+        max_steps=args.num_episode * len(build_context_ranges(args)) * args.lap_period,
     )
 
     global_step = 0
