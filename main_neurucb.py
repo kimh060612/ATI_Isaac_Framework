@@ -364,7 +364,7 @@ def main() -> None:
                         "scenario_light_label": scenario.light_label,
                         "scenario_light_intensity": float(env_context["light_intensity"]),
                         "scenario_speed": float(env_context["angular_velocity"]),
-                        "scenario_robot_angular_velocity": float(env_context["angular_velocity"]) * args.angular_speed,
+                        "scenario_robot_angular_velocity": float(env_context["angular_velocity"]) * args.angular_speed_scale,
                         "context_acceleration_magnitude": float(policy_context.get("acceleration_magnitude", 0.0)),
                         "context_gyro_magnitude": float(policy_context.get("gyro_magnitude", 0.0)),
                         "context_light_intensity": float(policy_context.get("light_intensity", 0.0)),
