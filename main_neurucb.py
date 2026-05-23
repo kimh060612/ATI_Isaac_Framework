@@ -76,7 +76,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--gradient_steps", type=int, default=1)
     parser.add_argument("--network_lr", type=float, default=1e-3)
     parser.add_argument("--network_weight_decay", type=float, default=1e-4)
-    parser.add_argument("--device", type=str, default=None)
+    parser.add_argument("--device", type=str, default="cuda")
     parser.add_argument("--checkpoint_episode_interval", type=int, default=1)
     parser.add_argument("--scenario_repeat_type", type=str, default="sin", choices=["sin", "step"])
     parser.add_argument("--speed_ranges", type=str, default=DEFAULT_SPEED_RANGES)
@@ -262,10 +262,10 @@ def main() -> None:
         context_len=args.lap_period,
         max_laps=args.num_episode * len(build_context_ranges(args)),
         max_steps=args.num_episode * len(build_context_ranges(args)) * args.lap_period,
+        exp_name=args.exp_name if not args.disable_wandb else None,
     )
 
     global_step = 0
-    last_checkpoint_episode = -1
     syn_data_cache = {
         "rgb": [],
         "depth": [],
@@ -397,7 +397,9 @@ def main() -> None:
                                 "global_step": global_step,
                                 "episode_idx": episode_idx,
                                 "episode_step": episode_step,
-                            }
+                            },
+                            step=episode_idx * args.lap_period + episode_step,
+                            commit=True
                         )
                     global_step += 1
                     if args.save_data:
