@@ -392,8 +392,9 @@ def main() -> None:
                     if not args.disable_wandb:
                         wandb_run.log(
                             {
-                                **flatten_metrics(reward_info, f"{scenario.name}_reward"),
-                                **flatten_metrics(update_info, f"{scenario.name}_update"),
+                                **flatten_metrics(reward_info, f"{scenario.name}"),
+                                **flatten_metrics(update_info, f"{scenario.name}"),
+                                **flatten_metrics(metric_info, f"{scenario.name}"),
                                 "global_step": global_step,
                                 "episode_idx": episode_idx,
                                 "episode_step": episode_step,
