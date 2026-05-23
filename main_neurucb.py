@@ -398,9 +398,8 @@ def main() -> None:
                                 "global_step": global_step,
                                 "episode_idx": episode_idx,
                                 "episode_step": episode_step,
-                            },
-                            step=episode_idx * args.lap_period + episode_step,
-                            commit=True
+                                f"{scenario.name}/scenario_step": episode_idx * args.lap_period + episode_step
+                            }
                         )
                     global_step += 1
                     if args.save_data:
