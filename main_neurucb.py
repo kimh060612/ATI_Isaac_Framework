@@ -259,7 +259,7 @@ def main() -> None:
     wandb_run = initialize_wandb(
         policy_type=args.policy_variant,
         l3_model_name=l3_mde_config.model_name,
-        context_len=len(policy_context),
+        context_len=args.lap_period,
     )
 
     global_step = 0
