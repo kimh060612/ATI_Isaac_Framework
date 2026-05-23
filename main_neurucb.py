@@ -61,7 +61,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="ATI per-step NeuralUCB sensor control in Isaac Sim")
     parser.add_argument("--exp_name", type=str, default="atil2l3_kaya_neurucb_oracle")
     parser.add_argument("--reward_type", type=str, default="oracle", choices=["flipped", "test_time_augment", "oracle"])
-    parser.add_argument("--data_path", type=str, default="/issac-sim/dataset/experiment_mde_prototype/kaya_neurucb")
+    parser.add_argument("--data_path", type=str, default="/home/kimh060612/ATI_research/dataset")
     parser.add_argument("--num_episode", type=int, default=200, help="Total scenario episodes if num_scenario_repeats is not set.")
     parser.add_argument("--lap_period", type=int, default=200, help="Rendered policy-training steps per scenario episode.")
     parser.add_argument("--exp_ratio", type=float, default=0.5, help="UCB exploration bonus alpha.")
