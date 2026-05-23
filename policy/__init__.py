@@ -1,8 +1,10 @@
 from policy.UCBPolicy import L2SharedLinUCBRGBCamPolicy, L2DisjointLinUCBRGBCamPolicy, L2ContextNormalizedDisjointLinUCBRGBCamPolicy, L2DisjointLinUCBSafeBoundedCamPolicy
 from policy.DiscreteUCBPolicy import L2DiscreteDisjointLinUCBRGBCamPolicy
+from policy.NeuralUCB import L2NeuralLinearUCBPolicy, L2NeuralUCBPolicy
 from policy.EGreedPolicy import L2SharedEGreedyRGBCamPolicy, L2EpsilonGreedyRGBCamPolicy
 from policy.SACPolicy import L2ContextualSACRGBCamPolicy, SACBoxSpec
 from policy.AutoExposurePolicy import *
 from policy.SensorParams import SensorParamSpace
 from policy.rewards.rewards import *
 from policy.consolidation import *
+from policy.scenario.scenario_episode import *

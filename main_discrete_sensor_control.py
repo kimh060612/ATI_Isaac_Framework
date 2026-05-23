@@ -39,7 +39,7 @@ import time
 parser = argparse.ArgumentParser(description="ATI Sensor Control with L2-L3 Feedback Loop in Isaac Sim")
 parser.add_argument("--exp_name", type=str, default="atil2l3_kaya_depthany_oracle", help="Name of the experiment for logging purposes")
 parser.add_argument("--reward_type", type=str, default="oracle", choices=["flipped", "test_time_augment", "oracle"], help="Type of reward function to use for the L2 policy")
-parser.add_argument("--data_path", type=str, default="/issac-sim/dataset/experiment_mde_prototype/kaya_awesome_naming", help="Directory path to save synthetic data and logs")
+parser.add_argument("--data_path", type=str, default="/home/kimh060612/ATI_research/dataset", help="Directory path to save synthetic data and logs")
 parser.add_argument("--max_laps", type=int, default=600, help="Maximum number of laps (context changes) to run in the simulation")
 parser.add_argument("--lap_period", type=int, default=30, help="Number of steps per lap (context change period)")
 parser.add_argument("--exp_ratio", type=float, default=0.5, help="Ratio of exploration vs exploitation for the L2 policy's action selection")
