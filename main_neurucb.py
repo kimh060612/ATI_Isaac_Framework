@@ -27,6 +27,7 @@ import random
 import traceback
 
 import numpy as np
+import torch
 from PIL import Image
 
 try:
@@ -146,6 +147,23 @@ def flatten_metrics(metrics: dict | None, prefix: str) -> dict:
     return payload
 
 
+def print_device_debug(requested_device: str) -> None:
+    cuda_visible_devices = os.environ.get("CUDA_VISIBLE_DEVICES", "<unset>")
+    print(
+        "[Device] requested={} torch={} cuda_available={} cuda_device_count={} "
+        "CUDA_VISIBLE_DEVICES={}".format(
+            requested_device,
+            torch.__version__,
+            torch.cuda.is_available(),
+            torch.cuda.device_count(),
+            cuda_visible_devices,
+        )
+    )
+    if torch.cuda.is_available():
+        for device_idx in range(torch.cuda.device_count()):
+            print(f"[Device] cuda:{device_idx} name={torch.cuda.get_device_name(device_idx)}")
+
+
 def get_policy_context(scene: ATIDepthScene, syn_data: dict | None = None) -> dict:
     syn_data = syn_data or {}
     context = syn_data.get("canonical_context")
@@ -178,6 +196,7 @@ def main() -> None:
     set_deterministic(RANDOM_SEED)
     random.seed(RANDOM_SEED)
     np.random.seed(RANDOM_SEED)
+    print_device_debug(args.device)
 
     data_path = os.path.join(
         args.data_path,
@@ -242,6 +261,8 @@ def main() -> None:
     if args.policy_variant == "neural_linear_ucb":
         policy_kwargs["neural_feature_dim"] = args.neural_feature_dim
     policy = policy_class(**policy_kwargs)
+    policy_param_device = next(policy.model.parameters()).device
+    print(f"[Device] policy_device={policy.device} policy_param_device={policy_param_device}")
 
     l3_mde_config = L3MDEConfig(
         reward_type=args.reward_type,
@@ -254,7 +275,8 @@ def main() -> None:
         disable_hflip=False,
         prediction_mode="identity",
     )
-    mde_model = L3PLayerDepthAnythingv2(l3_config=l3_mde_config, device="cuda")
+    mde_model = L3PLayerDepthAnythingv2(l3_config=l3_mde_config, device=args.device)
+    print(f"[Device] mde_device={mde_model.device} mde_pipeline_device={getattr(mde_model.model, 'device', '<unknown>')}")
     reward_function = select_reward_function(args.reward_type)
     wandb_run = initialize_wandb(
         policy_type=args.policy_variant,
@@ -395,6 +417,10 @@ def main() -> None:
                                 **flatten_metrics(reward_info, f"{scenario.name}"),
                                 **flatten_metrics(update_info, f"{scenario.name}"),
                                 **flatten_metrics(metric_info, f"{scenario.name}"),
+                                f"{scenario.name}/exposure_idx": curr_exposure_idx,
+                                f"{scenario.name}/iso_idx": curr_iso_idx,
+                                f"{scenario.name}/cmd_ang_vel": float(env_context["angular_velocity"]) * args.angular_speed_scale,
+                                f"{scenario.name}/cmd_light_intensity": float(env_context["light_intensity"]),
                                 "global_step": global_step,
                                 "episode_idx": episode_idx,
                                 "episode_step": episode_step,

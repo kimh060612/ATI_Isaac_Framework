@@ -20,7 +20,7 @@ class L3PLayerDepthAnythingv2:
     ):
         self.l3_config = l3_config
         self.model_name = l3_config.model_name
-        self.device = device
+        self.device = self.__resolve_device(device)
         self.min_depth = l3_config.min_depth
         self.max_depth = l3_config.max_depth
         self.reward_type = l3_config.reward_type
@@ -31,8 +31,25 @@ class L3PLayerDepthAnythingv2:
             "depth-anything/Depth-Anything-V2-Base-hf"
         ]:
             raise ValueError(f"Invalid model_name: {self.model_name}. Must be one of ['depth-anything/Depth-Anything-V2-Small-hf', 'depth-anything/Depth-Anything-V2-Base-hf']")
-        self.model = pipeline("depth-estimation", model=self.model_name, device=0 if self.device == "cuda" else -1)
+        pipeline_device = self.device.index if self.device.type == "cuda" and self.device.index is not None else 0
+        self.model = pipeline(
+            "depth-estimation",
+            model=self.model_name,
+            device=pipeline_device if self.device.type == "cuda" else -1,
+        )
         self.transforms = self.__build_recommended_transform_list()
+
+    @staticmethod
+    def __resolve_device(device: str | torch.device) -> torch.device:
+        if str(device).lower() == "auto":
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+        resolved = torch.device(device)
+        if resolved.type == "cuda" and not torch.cuda.is_available():
+            raise RuntimeError(
+                f"CUDA device '{resolved}' was requested for the depth model, "
+                "but torch.cuda.is_available() is False."
+            )
+        return resolved
     
     
     def __build_recommended_transform_list(self) -> list[TTATransform]:

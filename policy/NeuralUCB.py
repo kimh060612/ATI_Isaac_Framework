@@ -148,9 +148,13 @@ class _BaseNeuralBanditPolicy(BaseCMABPolicy, metaclass=ABCMeta):
         self.gradient_steps = max(int(gradient_steps), 0)
         self.learning_rate = float(learning_rate)
         self.weight_decay = float(weight_decay)
-        if device is None:
+        if device is None or str(device).lower() == "auto":
             device = "cuda" if torch.cuda.is_available() else "cpu"
         self.device = torch.device(device)
+        if self.device.type == "cuda" and not torch.cuda.is_available():
+            raise RuntimeError(
+                f"CUDA device '{self.device}' was requested, but torch.cuda.is_available() is False."
+            )
         self.base_context_dim = 3
         self.action_dim = 2
         self.action_feature_dim = self.base_context_dim + self.action_dim
@@ -380,17 +384,20 @@ class L2NeuralUCBPolicy(_BaseNeuralBanditPolicy):
             dim=1,
         )
         width = float(self.hidden_dims[0]) if self.hidden_dims else 1.0
-        gradient_features = (
-            gradient_tensor.detach().cpu().numpy().astype(np.float64)
-            / np.sqrt(max(width, 1.0))
+        gradient_features_t = gradient_tensor.to(torch.float64) / np.sqrt(max(width, 1.0))
+        z_t = torch.as_tensor(self.Z, dtype=torch.float64, device=self.device)
+        z_inv_g = torch.linalg.solve(z_t, gradient_features_t.T).T
+        bonuses_t = self.alpha * torch.sqrt(
+            torch.clamp(torch.sum(gradient_features_t * z_inv_g, dim=1), min=0.0)
         )
-        means_np = means.detach().cpu().numpy().astype(np.float64)
-        z_inv_g = np.linalg.solve(self.Z, gradient_features.T).T
-        bonuses = self.alpha * np.sqrt(
-            np.maximum(np.einsum("ij,ij->i", gradient_features, z_inv_g), 0.0)
+        means_t = means.to(torch.float64)
+        scores_t = means_t + bonuses_t
+        return (
+            scores_t.detach().cpu().numpy().astype(np.float64),
+            means_t.detach().cpu().numpy().astype(np.float64),
+            bonuses_t.detach().cpu().numpy().astype(np.float64),
+            gradient_features_t.detach().cpu().numpy().astype(np.float64),
         )
-        scores = means_np + bonuses
-        return scores, means_np, bonuses, gradient_features
 
     def ucb_score(self, action_feature: np.ndarray) -> Tuple[float, float, float, np.ndarray]:
         scores, means, bonuses, gradient_features = self._batched_ucb_scores(action_feature[None, :])
