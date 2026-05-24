@@ -9,6 +9,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.func import functional_call, grad_and_value, vmap
 
 from policy.BasePolicy import BaseCMABPolicy
 from policy.SensorParams import SensorParamSpace
@@ -353,28 +354,52 @@ class L2NeuralUCBPolicy(_BaseNeuralBanditPolicy):
         self.num_model_params = sum(param.numel() for param in self.model.parameters())
         self.Z = self.lambda_reg * np.eye(self.num_model_params, dtype=np.float64)
 
-    def _predict(self, action_feature: np.ndarray) -> float:
+    def _batched_ucb_scores(
+        self,
+        action_features: np.ndarray,
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         self.model.eval()
-        with torch.no_grad():
-            x = torch.as_tensor(action_feature[None, :], dtype=torch.float32, device=self.device)
-            return float(self.model(x).item())
+        x = torch.as_tensor(action_features, dtype=torch.float32, device=self.device)
+        params = dict(self.model.named_parameters())
+        buffers = dict(self.model.named_buffers())
+        param_names = tuple(params.keys())
 
-    def _gradient_feature(self, action_feature: np.ndarray) -> np.ndarray:
-        self.model.eval()
-        self.model.zero_grad(set_to_none=True)
-        x = torch.as_tensor(action_feature[None, :], dtype=torch.float32, device=self.device)
-        pred = self.model(x).sum()
-        grads = torch.autograd.grad(pred, tuple(self.model.parameters()), retain_graph=False)
-        g = torch.cat([grad.detach().reshape(-1) for grad in grads]).cpu().numpy().astype(np.float64)
+        def model_output(params, buffers, action_feature):
+            return functional_call(
+                self.model,
+                (params, buffers),
+                (action_feature.unsqueeze(0),),
+            ).squeeze(0)
+
+        grads, means = vmap(
+            grad_and_value(model_output),
+            in_dims=(None, None, 0),
+        )(params, buffers, x)
+        gradient_tensor = torch.cat(
+            [grads[name].reshape(x.shape[0], -1) for name in param_names],
+            dim=1,
+        )
         width = float(self.hidden_dims[0]) if self.hidden_dims else 1.0
-        return g / np.sqrt(max(width, 1.0))
+        gradient_features = (
+            gradient_tensor.detach().cpu().numpy().astype(np.float64)
+            / np.sqrt(max(width, 1.0))
+        )
+        means_np = means.detach().cpu().numpy().astype(np.float64)
+        z_inv_g = np.linalg.solve(self.Z, gradient_features.T).T
+        bonuses = self.alpha * np.sqrt(
+            np.maximum(np.einsum("ij,ij->i", gradient_features, z_inv_g), 0.0)
+        )
+        scores = means_np + bonuses
+        return scores, means_np, bonuses, gradient_features
 
     def ucb_score(self, action_feature: np.ndarray) -> Tuple[float, float, float, np.ndarray]:
-        mean = self._predict(action_feature)
-        g = self._gradient_feature(action_feature)
-        z_inv_g = np.linalg.solve(self.Z, g)
-        bonus = float(self.alpha * np.sqrt(max(float(g @ z_inv_g), 0.0)))
-        return mean + bonus, mean, bonus, g
+        scores, means, bonuses, gradient_features = self._batched_ucb_scores(action_feature[None, :])
+        return (
+            float(scores[0]),
+            float(means[0]),
+            float(bonuses[0]),
+            gradient_features[0],
+        )
 
     def select_action(
         self,
@@ -390,20 +415,28 @@ class L2NeuralUCBPolicy(_BaseNeuralBanditPolicy):
         if not candidates:
             raise RuntimeError("No valid actions available.")
 
+        action_features = np.concatenate(
+            [
+                np.repeat(base_context[None, :], len(candidates), axis=0),
+                np.asarray(candidates, dtype=np.float32),
+            ],
+            axis=1,
+        ).astype(np.float32)
+        scores, means, bonuses, gradient_features = self._batched_ucb_scores(action_features)
+
         rows = []
         best_score = -np.inf
         best_rows = []
-        for action in candidates:
-            action_feature = self.build_action_feature(context_information, action)
-            score, mean, bonus, gradient_feature = self.ucb_score(action_feature)
+        for idx, action in enumerate(candidates):
+            score = float(scores[idx])
             row = {
                 "action": action,
-                "z": gradient_feature,
-                "train_x": action_feature,
+                "z": gradient_features[idx],
+                "train_x": action_features[idx],
                 "base_context": base_context,
                 "score": score,
-                "mean": mean,
-                "bonus": bonus,
+                "mean": float(means[idx]),
+                "bonus": float(bonuses[idx]),
             }
             rows.append(row)
             if score > best_score + 1e-12:
