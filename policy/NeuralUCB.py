@@ -543,7 +543,7 @@ class L2NeuralUCBPolicy(_BaseNeuralBanditPolicy):
         return checkpoint_path
 
     def load(self, checkpoint_path: str) -> dict:
-        payload = torch.load(checkpoint_path, map_location=self.device)
+        payload = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
         self.model.load_state_dict(payload["model_state_dict"])
         self.optimizer.load_state_dict(payload["optimizer_state_dict"])
         self.Z = payload["Z"].detach().cpu().numpy().astype(np.float64)
@@ -813,7 +813,7 @@ class L2NeuralLinearUCBPolicy(_BaseNeuralBanditPolicy):
         return checkpoint_path
 
     def load(self, checkpoint_path: str) -> dict:
-        payload = torch.load(checkpoint_path, map_location=self.device)
+        payload = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
         self.model.load_state_dict(payload["model_state_dict"])
         self.optimizer.load_state_dict(payload["optimizer_state_dict"])
         self.A = payload["A"].detach().cpu().numpy().astype(np.float64)
