@@ -149,6 +149,22 @@ def flatten_metrics(metrics: dict | None, prefix: str) -> dict:
     return payload
 
 
+def append_numeric_metrics(accumulator: dict[str, list[float]], metrics: dict | None) -> None:
+    if not metrics:
+        return
+    for key, value in metrics.items():
+        if isinstance(value, (int, float, np.integer, np.floating, bool)):
+            accumulator.setdefault(key, []).append(float(value))
+
+
+def mean_accumulated_metrics(accumulator: dict[str, list[float]], prefix: str) -> dict:
+    return {
+        f"{prefix}/{key}": float(np.mean(values))
+        for key, values in accumulator.items()
+        if values
+    }
+
+
 def print_device_debug(requested_device: str) -> None:
     cuda_visible_devices = os.environ.get("CUDA_VISIBLE_DEVICES", "<unset>")
     print(
@@ -299,6 +315,9 @@ def main() -> None:
         "pred_depth": [],
         "imu": [],
     }
+    wandb_batch_metrics: dict[str, list[float]] = {}
+    wandb_batch_start_global_step = 0
+    wandb_batch_start_episode_step = 0
 
     try:
         # for episode_idx in range(total_episodes):
@@ -421,24 +440,51 @@ def main() -> None:
                         )
                 
                     if not args.disable_wandb:
-                        wandb_run.log(
+                        if not wandb_batch_metrics:
+                            wandb_batch_start_global_step = global_step
+                            wandb_batch_start_episode_step = episode_step
+                        append_numeric_metrics(
+                            wandb_batch_metrics,
                             {
-                                **flatten_metrics(reward_info, f"{scenario.name}"),
-                                **flatten_metrics(update_info, f"{scenario.name}"),
-                                **flatten_metrics(metric_info, f"{scenario.name}"),
-                                f"{scenario.name}/exposure_idx": curr_exposure_idx,
-                                f"{scenario.name}/iso_idx": curr_iso_idx,
-                                f"{scenario.name}/cmd_ang_vel": float(env_context["angular_velocity"]) * args.angular_speed_scale,
-                                f"{scenario.name}/cmd_light_intensity": float(env_context["light_intensity"]),
-                                f"{scenario.name}/acceleration_magnitude": float(policy_context.get("acceleration_magnitude", 0.0)),
-                                f"{scenario.name}/gyro_magnitude": float(policy_context.get("gyro_magnitude", 0.0)),
-                                f"{scenario.name}/light_intensity": float(policy_context.get("light_intensity", 0.0)),
-                                "global_step": global_step,
-                                "episode_idx": episode_idx,
-                                "episode_step": episode_step,
-                                f"{scenario.name}/scenario_step": episode_idx * args.lap_period + episode_step
-                            }
+                                **(reward_info or {}),
+                                **(metric_info or {}),
+                                "exposure_idx": curr_exposure_idx,
+                                "iso_idx": curr_iso_idx,
+                                "cmd_ang_vel": float(env_context["angular_velocity"]) * args.angular_speed_scale,
+                                "cmd_light_intensity": float(env_context["light_intensity"]),
+                                "acceleration_magnitude": float(policy_context.get("acceleration_magnitude", 0.0)),
+                                "gyro_magnitude": float(policy_context.get("gyro_magnitude", 0.0)),
+                                "light_intensity": float(policy_context.get("light_intensity", 0.0)),
+                                "chosen_score": float(selection["chosen_score"]),
+                                "chosen_mean": float(selection["chosen_mean"]),
+                                "chosen_bonus": float(selection["chosen_bonus"]),
+                                "reward_prediction": float(
+                                    selection.get("chosen_reward_prediction", selection["chosen_mean"])
+                                ),
+                            },
                         )
+
+                        if bool(update_info.get("batched_update", True)):
+                            batch_log_count = max(
+                                (len(values) for values in wandb_batch_metrics.values()),
+                                default=0,
+                            )
+                            wandb_run.log(
+                                {
+                                    **mean_accumulated_metrics(wandb_batch_metrics, f"{scenario.name}"),
+                                    **flatten_metrics(update_info, f"{scenario.name}"),
+                                    "global_step": global_step,
+                                    "episode_idx": episode_idx,
+                                    "episode_step": episode_step,
+                                    f"{scenario.name}/scenario_step": episode_idx * args.lap_period + episode_step,
+                                    f"{scenario.name}/batch_log_count": batch_log_count,
+                                    f"{scenario.name}/batch_start_global_step": wandb_batch_start_global_step,
+                                    f"{scenario.name}/batch_start_episode_step": wandb_batch_start_episode_step,
+                                    f"{scenario.name}/batch_end_global_step": global_step,
+                                    f"{scenario.name}/batch_end_episode_step": episode_step,
+                                }
+                            )
+                            wandb_batch_metrics = {}
                     global_step += 1
                     if args.save_data:
                         save_synthetic_data(
