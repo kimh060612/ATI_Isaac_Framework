@@ -181,8 +181,6 @@ class _BaseNeuralBanditPolicy(BaseCMABPolicy, metaclass=ABCMeta):
             )
         )
         light = max(float(context_information.get("light_intensity", 1.0)), 1.0)
-        # exposure_idx = int(context_information.get("exposure_idx", 0))
-        # iso_idx = int(context_information.get("iso_idx", 0))
 
         return np.asarray(
             [
@@ -192,8 +190,6 @@ class _BaseNeuralBanditPolicy(BaseCMABPolicy, metaclass=ABCMeta):
                     np.log1p(light),
                     np.log1p(max(self.max_light_context, 1.0)),
                 ),
-                # self._normalize_index(exposure_idx, self.n_exposure - 1),
-                # self._normalize_index(iso_idx, self.n_iso - 1),
             ],
             dtype=np.float32,
         )
@@ -548,6 +544,201 @@ class L2NeuralUCBPolicy(_BaseNeuralBanditPolicy):
         self.optimizer.load_state_dict(payload["optimizer_state_dict"])
         self.Z = payload["Z"].detach().cpu().numpy().astype(np.float64)
         self.update_count = int(payload.get("update_count", 0))
+        return dict(payload.get("metadata", {}))
+
+
+class L2BatchedNeuralUCBPolicy(L2NeuralUCBPolicy):
+    """
+    NeuralUCB policy that changes camera parameters once per update interval.
+
+    A new UCB action is selected at the beginning of each batch.  Intermediate
+    steps return the hold action (0, 0), so exposure/gain stay fixed while
+    rewards are accumulated.  Once update_interval rewards are observed, the
+    parent NeuralUCB update runs once with the mean batch reward.
+    """
+
+    def __init__(
+        self,
+        sensor_names,
+        sensor_config: Optional[SensorParamSpace],
+        reward_function,
+        alpha: float = 1.0,
+        lambda_reg: float = 1.0,
+        random_seed: Optional[int] = None,
+        forced_exploration_prob: float = 0.05,
+        max_acceleration_context: float = 5.0,
+        max_gyro_context: float = 3.0,
+        max_light_context: float = 10000.0,
+        hidden_dims: Tuple[int, ...] = (32,),
+        replay_capacity: int = 5000,
+        batch_size: int = 64,
+        train_every: int = 1,
+        gradient_steps: int = 1,
+        learning_rate: float = 1e-3,
+        weight_decay: float = 1e-4,
+        device: Optional[str] = None,
+        update_interval: int = 10,
+    ):
+        if int(update_interval) <= 0:
+            raise ValueError("update_interval must be positive.")
+        self.update_interval = int(update_interval)
+        self._active_selection: Optional[dict] = None
+        self._active_rewards: list[float] = []
+        self._batch_decision_count = 0
+        super().__init__(
+            sensor_names=sensor_names,
+            sensor_config=sensor_config,
+            reward_function=reward_function,
+            alpha=alpha,
+            lambda_reg=lambda_reg,
+            random_seed=random_seed,
+            forced_exploration_prob=forced_exploration_prob,
+            max_acceleration_context=max_acceleration_context,
+            max_gyro_context=max_gyro_context,
+            max_light_context=max_light_context,
+            hidden_dims=hidden_dims,
+            replay_capacity=replay_capacity,
+            batch_size=batch_size,
+            train_every=train_every,
+            gradient_steps=gradient_steps,
+            learning_rate=learning_rate,
+            weight_decay=weight_decay,
+            device=device,
+        )
+
+    def _common_metadata(self, metadata: Optional[Dict]) -> Dict:
+        payload = super()._common_metadata(metadata)
+        payload["update_interval"] = self.update_interval
+        return payload
+
+    def _hold_selection(self, context_information: dict) -> dict:
+        hold_action = (0, 0)
+        base_context = self.build_base_context(context_information)
+        action_values = np.asarray([float(hold_action[0]), float(hold_action[1])], dtype=np.float32)
+        action_feature = np.concatenate([base_context, action_values]).astype(np.float32)
+        score, mean, bonus, gradient_feature = self.ucb_score(action_feature)
+        row = {
+            "action": hold_action,
+            "z": gradient_feature,
+            "train_x": action_feature,
+            "base_context": base_context,
+            "score": score,
+            "mean": mean,
+            "bonus": bonus,
+        }
+        active_action = None
+        if self._active_selection is not None:
+            active_action = self._active_selection["chosen_action"]
+        return {
+            "context": base_context,
+            "candidates": [row],
+            "chosen_action": hold_action,
+            "chosen_z": gradient_feature,
+            "chosen_train_x": action_feature,
+            "chosen_base_context": base_context,
+            "chosen_score": score,
+            "chosen_mean": mean,
+            "chosen_bonus": bonus,
+            "selection_mode": "batch_hold",
+            "forced_explore": False,
+            "batch_phase": "hold",
+            "batch_observed_steps": len(self._active_rewards),
+            "batch_update_interval": self.update_interval,
+            "active_batch_action": active_action,
+        }
+
+    def select_action(
+        self,
+        context_information: dict,
+        tie_break_random: bool = True,
+        force_explore: Optional[bool] = None,
+    ) -> dict:
+        if self._active_selection is not None:
+            return self._hold_selection(context_information)
+
+        selection = super().select_action(
+            context_information=context_information,
+            tie_break_random=tie_break_random,
+            force_explore=force_explore,
+        )
+        self._active_selection = selection
+        self._active_rewards = []
+        self._batch_decision_count += 1
+        selection["batch_phase"] = "start"
+        selection["batch_observed_steps"] = 0
+        selection["batch_update_interval"] = self.update_interval
+        selection["active_batch_action"] = selection["chosen_action"]
+        selection["batch_decision_count"] = self._batch_decision_count
+        return selection
+
+    def observe(self, selection: dict, reward: float) -> dict:
+        if self._active_selection is None:
+            return super().observe(selection, reward)
+
+        immediate_reward = float(reward)
+        self._active_rewards.append(immediate_reward)
+        batch_steps = len(self._active_rewards)
+        active_action = self._active_selection["chosen_action"]
+
+        if batch_steps < self.update_interval:
+            return {
+                "action": selection["chosen_action"],
+                "active_batch_action": active_action,
+                "reward": immediate_reward,
+                "batch_reward": None,
+                "batched_update": False,
+                "batch_step": batch_steps,
+                "batch_update_interval": self.update_interval,
+                "train_loss": None,
+                "replay_size": len(self.replay),
+                "num_model_params": self.num_model_params,
+            }
+
+        active_selection = self._active_selection
+        batch_rewards = np.asarray(self._active_rewards, dtype=np.float32)
+        batch_reward = float(np.mean(batch_rewards))
+        self._active_selection = None
+        self._active_rewards = []
+
+        update_info = super().observe(active_selection, batch_reward)
+        update_info.update(
+            {
+                "active_batch_action": active_action,
+                "immediate_reward": immediate_reward,
+                "batch_reward": batch_reward,
+                "batch_reward_std": float(np.std(batch_rewards)),
+                "batched_update": True,
+                "batch_step": batch_steps,
+                "batch_update_interval": self.update_interval,
+            }
+        )
+        return update_info
+
+    def save(self, checkpoint_path: str, metadata: Optional[Dict] = None) -> str:
+        checkpoint_path = os.path.abspath(checkpoint_path)
+        os.makedirs(os.path.dirname(checkpoint_path), exist_ok=True)
+        payload = {
+            "metadata": self._common_metadata(metadata),
+            "model_state_dict": self.model.state_dict(),
+            "optimizer_state_dict": self.optimizer.state_dict(),
+            "Z": torch.as_tensor(self.Z, dtype=torch.float64),
+            "update_count": self.update_count,
+            "active_selection": self._active_selection,
+            "active_rewards": list(self._active_rewards),
+            "batch_decision_count": self._batch_decision_count,
+        }
+        torch.save(payload, checkpoint_path)
+        return checkpoint_path
+
+    def load(self, checkpoint_path: str) -> dict:
+        payload = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
+        self.model.load_state_dict(payload["model_state_dict"])
+        self.optimizer.load_state_dict(payload["optimizer_state_dict"])
+        self.Z = payload["Z"].detach().cpu().numpy().astype(np.float64)
+        self.update_count = int(payload.get("update_count", 0))
+        self._active_selection = payload.get("active_selection")
+        self._active_rewards = [float(value) for value in payload.get("active_rewards", [])]
+        self._batch_decision_count = int(payload.get("batch_decision_count", 0))
         return dict(payload.get("metadata", {}))
 
 

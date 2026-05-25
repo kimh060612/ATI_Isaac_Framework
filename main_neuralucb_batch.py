@@ -1,5 +1,9 @@
 """
-Evaluate a trained NeuralUCB policy in Isaac Sim without updating it.
+Batched NeuralUCB/LinUCB sensor-control training in Isaac Sim.
+
+Training is organized as scenario episodes.  Each episode holds one coarse
+scenario, for example SLOW x DARK, and moves only within a small contiguous
+context range so the policy learns smoothly over nearby IMU/light contexts.
 """
 
 ## Basic imports: Must be here.
@@ -18,11 +22,9 @@ CONFIG = {
 simulation_app = SimulationApp(launch_config=CONFIG)
 
 import argparse
-import json
 import os
 import random
 import traceback
-from pathlib import Path
 
 import numpy as np
 import torch
@@ -38,51 +40,54 @@ from ati_utils.log_utils import configure_isaac_sim_logging, save_synthetic_data
 from ati_utils.ati_utils import *
 from l3_perception_layer import L3PLayerDepthAnythingv2, set_deterministic
 from policy import (
+    L2BatchedNeuralUCBPolicy,
     L2NeuralLinearUCBPolicy,
     L2NeuralUCBPolicy,
     SensorParamSpace,
     episode_bank,
 )
 from scene import ATIDepthScene
+import wandb
 
 
 RANDOM_SEED = 42
 VERBOSE = True
+DEBUG = True
 
 
-DEFAULT_SPEED_RANGES = "SUPER_FAST:1.2:2.0"
-DEFAULT_LIGHT_RANGES = "DARK:100:300,NORMAL:1000:1200,BRIGHT:4000:4200"
+DEFAULT_SPEED_RANGES = "SLOW:0.0:0.4,NORMAL:0.9:1.2,FAST:1.5:1.8,SUPER_FAST:1.9:2.1"
+DEFAULT_LIGHT_RANGES = "DARK:100:300,DIM:500:600,NORMAL:1000:1200,BRIGHT:4000:4200,SUPER_BRIGHT:9000:9200"
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Evaluate a trained NeuralUCB policy in Isaac Sim")
-    parser.add_argument("--checkpoint_path", type=str, required=True)
-    parser.add_argument("--exp_name", type=str, default="atil2l3_kaya_neurucb_eval")
-    parser.add_argument("--reward_type", type=str, default=None, choices=["flipped", "test_time_augment", "oracle"])
+    parser = argparse.ArgumentParser(description="ATI batched NeuralUCB sensor control in Isaac Sim")
+    parser.add_argument("--exp_name", type=str, default="atil2l3_kaya_neurucb_oracle")
+    parser.add_argument("--reward_type", type=str, default="oracle", choices=["flipped", "test_time_augment", "oracle"])
     parser.add_argument("--data_path", type=str, default="/home/kimh060612/ATI_research/dataset")
-    parser.add_argument("--num_episode", type=int, default=1)
-    parser.add_argument("--lap_period", type=int, default=200)
-    parser.add_argument("--policy_variant", type=str, default=None, choices=["neural_ucb", "neural_linear_ucb"])
-    parser.add_argument("--exp_ratio", type=float, default=None, help="Override saved UCB exploration bonus alpha.")
-    parser.add_argument("--lambda_reg", type=float, default=None)
-    parser.add_argument("--hidden_dims", type=str, default=None)
-    parser.add_argument("--neural_feature_dim", type=int, default=None)
-    parser.add_argument("--replay_capacity", type=int, default=None)
-    parser.add_argument("--batch_size", type=int, default=None)
-    parser.add_argument("--train_every", type=int, default=None)
-    parser.add_argument("--gradient_steps", type=int, default=None)
-    parser.add_argument("--network_lr", type=float, default=None)
-    parser.add_argument("--network_weight_decay", type=float, default=None)
+    parser.add_argument("--num_episode", type=int, default=200, help="Total scenario episodes if num_scenario_repeats is not set.")
+    parser.add_argument("--lap_period", type=int, default=2000, help="Rendered policy-training steps per scenario episode.")
+    parser.add_argument("--exp_ratio", type=float, default=0.5, help="UCB exploration bonus alpha.")
+    parser.add_argument("--lambda_reg", type=float, default=1.0)
+    parser.add_argument("--policy_variant", type=str, default="neural_ucb", choices=["neural_ucb", "neural_linear_ucb"])
+    parser.add_argument("--forced_exploration_prob", type=float, default=0.05)
+    parser.add_argument("--hidden_dims", type=str, default="32", help="Comma-separated MLP hidden dimensions.")
+    parser.add_argument("--neural_feature_dim", type=int, default=32, help="Encoder feature size for neural_linear_ucb.")
+    parser.add_argument("--replay_capacity", type=int, default=5000)
+    parser.add_argument("--batch_size", type=int, default=64)
+    parser.add_argument("--action_update_interval", type=int, default=10, help="Select a new NeuralUCB camera action every M valid rendered steps.")
+    parser.add_argument("--train_every", type=int, default=1)
+    parser.add_argument("--gradient_steps", type=int, default=1)
+    parser.add_argument("--network_lr", type=float, default=1e-3)
+    parser.add_argument("--network_weight_decay", type=float, default=1e-4)
     parser.add_argument("--device", type=str, default="cuda")
-    parser.add_argument("--l3_model_name", type=str, default=None)
+    parser.add_argument("--checkpoint_episode_interval", type=int, default=1)
     parser.add_argument("--scenario_repeat_type", type=str, default="sin", choices=["sin", "step"])
     parser.add_argument("--speed_ranges", type=str, default=DEFAULT_SPEED_RANGES)
     parser.add_argument("--light_ranges", type=str, default=DEFAULT_LIGHT_RANGES)
-    parser.add_argument("--angular_speed_scale", type=float, default=float(np.pi / 12))
-    parser.add_argument("--max_acceleration_context", type=float, default=None)
-    parser.add_argument("--max_gyro_context", type=float, default=None)
-    parser.add_argument("--max_light_context", type=float, default=None)
-    parser.add_argument("--tie_break_random", action="store_true")
+    parser.add_argument("--angular_speed_scale", type=float, default=float(np.pi / 12), help="Scale scenario speed before robot_control.")
+    parser.add_argument("--max_acceleration_context", type=float, default=5.0)
+    parser.add_argument("--max_gyro_context", type=float, default=3.0)
+    parser.add_argument("--max_light_context", type=float, default=10000.0)
     parser.add_argument("--disable_wandb", action="store_true")
     parser.add_argument("--save_data", action="store_true")
     return parser
@@ -134,7 +139,6 @@ def build_context_ranges(args) -> list[dict]:
             )
     return context_ranges
 
-
 def flatten_metrics(metrics: dict | None, prefix: str) -> dict:
     if not metrics:
         return {}
@@ -162,104 +166,6 @@ def print_device_debug(requested_device: str) -> None:
             print(f"[Device] cuda:{device_idx} name={torch.cuda.get_device_name(device_idx)}")
 
 
-def load_checkpoint_metadata(checkpoint_path: str) -> dict:
-    payload = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
-    return dict(payload.get("metadata", {}))
-
-
-def checkpoint_policy_variant(metadata: dict) -> str | None:
-    policy_type = str(metadata.get("policy_type", ""))
-    if policy_type == "L2NeuralLinearUCBPolicy":
-        return "neural_linear_ucb"
-    if policy_type == "L2NeuralUCBPolicy":
-        return "neural_ucb"
-    return None
-
-
-def metadata_or_arg(args, metadata: dict, arg_name: str, metadata_name: str, default):
-    arg_value = getattr(args, arg_name)
-    if arg_value is not None:
-        return arg_value
-    return metadata.get(metadata_name, default)
-
-
-def resolve_hidden_dims(args, metadata: dict) -> tuple[int, ...]:
-    if args.hidden_dims is not None:
-        return parse_int_tuple(args.hidden_dims)
-    saved_dims = metadata.get("hidden_dims")
-    if saved_dims:
-        return tuple(int(dim) for dim in saved_dims)
-    return (32,)
-
-
-def resolve_reward_type(args, metadata: dict) -> str:
-    if args.reward_type is not None:
-        return args.reward_type
-    l3_metadata = metadata.get("l3_mde_config", {})
-    if isinstance(l3_metadata, dict) and l3_metadata.get("reward_type"):
-        return str(l3_metadata["reward_type"])
-    return "oracle"
-
-
-def build_l3_config(args, metadata: dict, reward_type: str) -> L3MDEConfig:
-    l3_metadata = metadata.get("l3_mde_config", {})
-    if not isinstance(l3_metadata, dict):
-        l3_metadata = {}
-
-    def tuple_field(name: str, default):
-        value = l3_metadata.get(name, default)
-        return tuple(value) if value is not None else tuple()
-
-    return L3MDEConfig(
-        reward_type=reward_type,
-        model_name=args.l3_model_name or l3_metadata.get("model_name", "depth-anything/Depth-Anything-V2-Small-hf"),
-        shift_ratios=tuple_field("shift_ratios", []),
-        zoom_factors=tuple_field("zoom_factors", []),
-        gaussian_noise_stds=tuple_field("gaussian_noise_stds", (0.01, 0.02, 0.05)),
-        brightness_factors=tuple_field("brightness_factors", ()),
-        color_jitter_strengths=tuple_field("color_jitter_strengths", (0.1, 0.15)),
-        disable_hflip=bool(l3_metadata.get("disable_hflip", False)),
-        prediction_mode=str(l3_metadata.get("prediction_mode", "identity")),
-    )
-
-
-def build_policy(args, metadata: dict, sensor_param_space: SensorParamSpace, reward_type: str):
-    policy_variant = args.policy_variant or checkpoint_policy_variant(metadata) or "neural_ucb"
-    policy_class = L2NeuralUCBPolicy if policy_variant == "neural_ucb" else L2NeuralLinearUCBPolicy
-    policy_kwargs = {
-        "sensor_names": "agent_camera",
-        "sensor_config": sensor_param_space,
-        "reward_function": select_reward_function(reward_type),
-        "alpha": float(metadata_or_arg(args, metadata, "exp_ratio", "alpha", 0.5)),
-        "lambda_reg": float(metadata_or_arg(args, metadata, "lambda_reg", "lambda_reg", 1.0)),
-        "random_seed": RANDOM_SEED,
-        "forced_exploration_prob": 0.0,
-        "max_acceleration_context": float(
-            metadata_or_arg(args, metadata, "max_acceleration_context", "max_acceleration_context", 5.0)
-        ),
-        "max_gyro_context": float(metadata_or_arg(args, metadata, "max_gyro_context", "max_gyro_context", 3.0)),
-        "max_light_context": float(metadata_or_arg(args, metadata, "max_light_context", "max_light_context", 10000.0)),
-        "hidden_dims": resolve_hidden_dims(args, metadata),
-        "replay_capacity": int(metadata_or_arg(args, metadata, "replay_capacity", "replay_capacity", 5000)),
-        "batch_size": int(metadata_or_arg(args, metadata, "batch_size", "batch_size", 64)),
-        "train_every": int(metadata_or_arg(args, metadata, "train_every", "train_every", 1)),
-        "gradient_steps": int(metadata_or_arg(args, metadata, "gradient_steps", "gradient_steps", 0)),
-        "learning_rate": float(metadata_or_arg(args, metadata, "network_lr", "learning_rate", 1e-3)),
-        "weight_decay": float(metadata_or_arg(args, metadata, "network_weight_decay", "weight_decay", 1e-4)),
-        "device": args.device,
-    }
-    if policy_variant == "neural_linear_ucb":
-        neural_feature_dim = args.neural_feature_dim or metadata.get("neural_feature_dim", 32)
-        policy_kwargs["neural_feature_dim"] = int(neural_feature_dim)
-
-    policy = policy_class(**policy_kwargs)
-    loaded_metadata = policy.load(args.checkpoint_path)
-    policy.model.eval()
-    print(f"[Checkpoint] Loaded {args.checkpoint_path}")
-    print(f"[Checkpoint] saved_policy_type={loaded_metadata.get('policy_type', '<unknown>')}")
-    return policy, policy_variant, policy_kwargs
-
-
 def get_policy_context(scene: ATIDepthScene, syn_data: dict | None = None) -> dict:
     syn_data = syn_data or {}
     context = syn_data.get("canonical_context")
@@ -271,76 +177,20 @@ def get_policy_context(scene: ATIDepthScene, syn_data: dict | None = None) -> di
     )
 
 
-def json_ready(value):
-    if isinstance(value, dict):
-        return {str(key): json_ready(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [json_ready(item) for item in value]
-    if isinstance(value, np.ndarray):
-        return value.tolist()
-    if isinstance(value, (np.integer, np.floating)):
-        return value.item()
-    if isinstance(value, np.bool_):
-        return bool(value)
-    if value is None or isinstance(value, (str, int, float, bool)):
-        return value
-    return repr(value)
-
-
-def summarize_records(records: list[dict]) -> dict:
-    if not records:
-        return {"num_steps": 0, "mean_reward": 0.0, "per_scenario": {}}
-
-    summary = {
-        "num_steps": len(records),
-        "mean_reward": float(np.mean([record["reward"] for record in records])),
-        "per_scenario": {},
-    }
-    scenario_names = sorted({record["scenario_name"] for record in records})
-    for scenario_name in scenario_names:
-        scenario_records = [record for record in records if record["scenario_name"] == scenario_name]
-        scenario_summary = {
-            "num_steps": len(scenario_records),
-            "mean_reward": float(np.mean([record["reward"] for record in scenario_records])),
-        }
-        reward_keys = sorted(
-            {
-                key
-                for record in scenario_records
-                for key, value in record["reward_info"].items()
-                if isinstance(value, (int, float, np.integer, np.floating, bool))
-            }
-        )
-        metric_keys = sorted(
-            {
-                key
-                for record in scenario_records
-                for key, value in record["metric_info"].items()
-                if isinstance(value, (int, float, np.integer, np.floating, bool))
-            }
-        )
-        scenario_summary["reward_info"] = {
-            key: float(np.mean([record["reward_info"][key] for record in scenario_records]))
-            for key in reward_keys
-        }
-        scenario_summary["metric_info"] = {
-            key: float(np.mean([record["metric_info"][key] for record in scenario_records]))
-            for key in metric_keys
-        }
-        summary["per_scenario"][scenario_name] = scenario_summary
-    return summary
-
-
-def save_eval_outputs(data_path: str, records: list[dict], summary: dict) -> tuple[str, str]:
-    os.makedirs(data_path, exist_ok=True)
-    records_path = os.path.join(data_path, "eval_records.jsonl")
-    summary_path = os.path.join(data_path, "eval_summary.json")
-    with open(records_path, "w", encoding="utf-8") as records_file:
-        for record in records:
-            records_file.write(json.dumps(json_ready(record), sort_keys=True) + "\n")
-    with open(summary_path, "w", encoding="utf-8") as summary_file:
-        json.dump(json_ready(summary), summary_file, indent=2, sort_keys=True)
-    return records_path, summary_path
+def make_checkpoint(
+    policy: L2NeuralUCBPolicy,
+    data_path: str,
+    episode_idx: int,
+    metadata: dict,
+) -> str:
+    os.makedirs(f"{data_path}/checkpoints", exist_ok=True)
+    checkpoint_path = os.path.join(
+        data_path,
+        f"checkpoints/neurucb_policy_episode_{episode_idx + 1:04d}.pt",
+    )
+    saved_path = policy.save(checkpoint_path, metadata=metadata)
+    print(f"[Checkpoint] Saved NeuralUCB policy to {saved_path}")
+    return saved_path
 
 
 def main() -> None:
@@ -350,13 +200,9 @@ def main() -> None:
     np.random.seed(RANDOM_SEED)
     print_device_debug(args.device)
 
-    checkpoint_metadata = load_checkpoint_metadata(args.checkpoint_path)
-    reward_type = resolve_reward_type(args, checkpoint_metadata)
-    context_ranges = build_context_ranges(args)
-    checkpoint_stem = Path(args.checkpoint_path).stem
     data_path = os.path.join(
         args.data_path,
-        f"evaluation_{args.exp_name}_{reward_type}_{args.lap_period}steps_{checkpoint_stem}",
+        f"experiment_{args.exp_name}_{args.reward_type}_{args.lap_period}steps_policy_{args.policy_variant}",
     )
     os.makedirs(data_path, exist_ok=True)
 
@@ -364,7 +210,7 @@ def main() -> None:
     kaya_config = ATIBaseRobotConfig(robot_name="kaya")
     kaya_config.set_kaya_config()
     render_config = ATIBaseConfig(
-        name="ati_neurucb_inference",
+        name="ati_neurucb_rendering",
         robot_config=kaya_config,
     )
     render_config.set_agent_sensor_controller("exposure_iso_controller")
@@ -388,28 +234,64 @@ def main() -> None:
         }
     )
 
-    policy, policy_variant, policy_kwargs = build_policy(args, checkpoint_metadata, sensor_param_space, reward_type)
+    hidden_dims = parse_int_tuple(args.hidden_dims)
+    policy_class = (
+        L2BatchedNeuralUCBPolicy
+        if args.policy_variant == "neural_ucb"
+        else L2NeuralLinearUCBPolicy
+    )
+    policy_kwargs = {
+        "sensor_names": "agent_camera",
+        "sensor_config": sensor_param_space,
+        "reward_function": select_reward_function(args.reward_type),
+        "alpha": args.exp_ratio,
+        "lambda_reg": args.lambda_reg,
+        "random_seed": RANDOM_SEED,
+        "forced_exploration_prob": args.forced_exploration_prob,
+        "max_acceleration_context": args.max_acceleration_context,
+        "max_gyro_context": args.max_gyro_context,
+        "max_light_context": args.max_light_context,
+        "hidden_dims": hidden_dims,
+        "replay_capacity": args.replay_capacity,
+        "batch_size": args.batch_size,
+        "train_every": args.train_every,
+        "gradient_steps": args.gradient_steps,
+        "learning_rate": args.network_lr,
+        "weight_decay": args.network_weight_decay,
+        "device": args.device,
+    }
+    if args.policy_variant == "neural_ucb":
+        policy_kwargs["update_interval"] = args.action_update_interval
+    if args.policy_variant == "neural_linear_ucb":
+        policy_kwargs["neural_feature_dim"] = args.neural_feature_dim
+    policy = policy_class(**policy_kwargs)
     policy_param_device = next(policy.model.parameters()).device
     print(f"[Device] policy_device={policy.device} policy_param_device={policy_param_device}")
 
-    l3_mde_config = build_l3_config(args, checkpoint_metadata, reward_type)
+    l3_mde_config = L3MDEConfig(
+        reward_type=args.reward_type,
+        model_name="depth-anything/Depth-Anything-V2-Small-hf",
+        shift_ratios=[],
+        zoom_factors=[],
+        gaussian_noise_stds=(0.01, 0.02, 0.05),
+        brightness_factors=(),
+        color_jitter_strengths=(0.1, 0.15),
+        disable_hflip=False,
+        prediction_mode="identity",
+    )
     mde_model = L3PLayerDepthAnythingv2(l3_config=l3_mde_config, device=args.device)
     print(f"[Device] mde_device={mde_model.device} mde_pipeline_device={getattr(mde_model.model, 'device', '<unknown>')}")
-    reward_function = select_reward_function(reward_type)
-
-    wandb_run = None
-    if not args.disable_wandb:
-        wandb_run = initialize_wandb(
-            policy_type=f"{policy_variant}_eval",
-            l3_model_name=l3_mde_config.model_name,
-            context_len=args.lap_period,
-            max_laps=args.num_episode * len(context_ranges),
-            max_steps=args.num_episode * len(context_ranges) * args.lap_period,
-            exp_name=args.exp_name,
-        )
+    reward_function = select_reward_function(args.reward_type)
+    wandb_run = initialize_wandb(
+        policy_type=args.policy_variant,
+        l3_model_name=l3_mde_config.model_name,
+        context_len=args.lap_period,
+        max_laps=args.num_episode * len(build_context_ranges(args)),
+        max_steps=args.num_episode * len(build_context_ranges(args)) * args.lap_period,
+        exp_name=args.exp_name if not args.disable_wandb else None,
+    )
 
     global_step = 0
-    eval_records = []
     syn_data_cache = {
         "rgb": [],
         "depth": [],
@@ -419,9 +301,10 @@ def main() -> None:
     }
 
     try:
+        # for episode_idx in range(total_episodes):
         for episode_idx in range(args.num_episode):
             scenario_bank = episode_bank(
-                context_ranges=context_ranges,
+                context_ranges=build_context_ranges(args),
                 scenario_period=args.lap_period,
                 repeat_type=args.scenario_repeat_type,
                 random_seed=RANDOM_SEED,
@@ -449,8 +332,7 @@ def main() -> None:
                     }
                     selection = policy.select_action(
                         context_information=context_information,
-                        tie_break_random=args.tie_break_random,
-                        force_explore=False,
+                        tie_break_random=True,
                     )
                     action = selection["chosen_action"]
                     next_exposure_idx, next_iso_idx = policy.transition(
@@ -474,11 +356,11 @@ def main() -> None:
                     imu_data = syn_data.get("imu_sensor", None)
                     if rgb_image is None or rgb_image.size == 0:
                         if VERBOSE:
-                            print("Warning: Received empty RGB image. Skipping step.")
+                            print("Warning: Received empty RGB image. Skipping update.")
                         continue
                     if gt_depth is None or gt_depth.size == 0:
                         if VERBOSE:
-                            print("Warning: Received empty ground-truth depth image. Skipping step.")
+                            print("Warning: Received empty ground-truth depth image. Skipping update.")
                         continue
 
                     syn_data_cache["rgb"].append(rgb_image)
@@ -498,6 +380,7 @@ def main() -> None:
                     )
                     reward_info = reward_function(**observation_info)
                     reward = float(reward_info.get("reward", 0.0))
+                    update_info = policy.observe(selection, reward)
                     record = {
                         "episode_idx": episode_idx,
                         "episode_step": episode_step,
@@ -519,52 +402,49 @@ def main() -> None:
                         "chosen_bonus": float(selection["chosen_bonus"]),
                         "reward_prediction": float(selection.get("chosen_reward_prediction", selection["chosen_mean"])),
                         "selection_mode": selection["selection_mode"],
-                        "reward": reward,
+                        "batch_phase": selection.get("batch_phase"),
+                        "batch_observed_steps": selection.get("batch_observed_steps"),
+                        "batch_update_interval": selection.get("batch_update_interval"),
+                        "active_batch_action": selection.get("active_batch_action"),
+                        "batched_update": update_info.get("batched_update"),
                         "reward_info": reward_info,
-                        "metric_info": metric_info,
+                        "update_info": update_info,
                     }
-                    eval_records.append(record)
-
+                    policy.history.append(record)
                     if VERBOSE:
                         print(
-                            f"Eval Episode {episode_idx} Step {episode_step} | "
+                            f"Episode {episode_idx} Step {episode_step} | "
                             f"Scenario: {scenario.name} | "
                             f"Action: {action} | "
                             f"Reward: {reward:.4f} | "
                             f"Chosen Score: {selection['chosen_score']:.4f}"
                         )
-
-                    if wandb_run is not None:
+                
+                    if not args.disable_wandb:
                         wandb_run.log(
                             {
                                 **flatten_metrics(reward_info, f"{scenario.name}"),
+                                **flatten_metrics(update_info, f"{scenario.name}"),
                                 **flatten_metrics(metric_info, f"{scenario.name}"),
-                                f"{scenario.name}/reward": reward,
                                 f"{scenario.name}/exposure_idx": curr_exposure_idx,
                                 f"{scenario.name}/iso_idx": curr_iso_idx,
-                                f"{scenario.name}/chosen_score": float(selection["chosen_score"]),
-                                f"{scenario.name}/chosen_mean": float(selection["chosen_mean"]),
-                                f"{scenario.name}/chosen_bonus": float(selection["chosen_bonus"]),
                                 f"{scenario.name}/cmd_ang_vel": float(env_context["angular_velocity"]) * args.angular_speed_scale,
                                 f"{scenario.name}/cmd_light_intensity": float(env_context["light_intensity"]),
-                                f"{scenario.name}/acceleration_magnitude": float(
-                                    policy_context.get("acceleration_magnitude", 0.0)
-                                ),
+                                f"{scenario.name}/acceleration_magnitude": float(policy_context.get("acceleration_magnitude", 0.0)),
                                 f"{scenario.name}/gyro_magnitude": float(policy_context.get("gyro_magnitude", 0.0)),
                                 f"{scenario.name}/light_intensity": float(policy_context.get("light_intensity", 0.0)),
                                 "global_step": global_step,
                                 "episode_idx": episode_idx,
                                 "episode_step": episode_step,
-                                f"{scenario.name}/scenario_step": episode_idx * args.lap_period + episode_step,
+                                f"{scenario.name}/scenario_step": episode_idx * args.lap_period + episode_step
                             }
                         )
-
                     global_step += 1
                     if args.save_data:
                         save_synthetic_data(
                             DATA_PATH=data_path,
                             syn_data=syn_data_cache,
-                            lap_idx=global_step,
+                            lap_idx=episode_idx,
                         )
                         syn_data_cache = {
                             "rgb": [],
@@ -574,28 +454,19 @@ def main() -> None:
                             "imu": [],
                         }
 
-        summary = summarize_records(eval_records)
-        records_path, summary_path = save_eval_outputs(data_path, eval_records, summary)
-        print(f"[Eval] mean_reward={summary['mean_reward']:.4f} num_steps={summary['num_steps']}")
-        print(f"[Eval] Saved records to {records_path}")
-        print(f"[Eval] Saved summary to {summary_path}")
-        metadata_path = os.path.join(data_path, "eval_metadata.json")
-        with open(metadata_path, "w", encoding="utf-8") as metadata_file:
-            json.dump(
-                json_ready(
-                    {
-                        "checkpoint_path": args.checkpoint_path,
-                        "checkpoint_metadata": checkpoint_metadata,
-                        "policy_variant": policy_variant,
-                        "policy_kwargs": policy_kwargs,
-                        "l3_mde_config": l3_mde_config.__dict__,
-                    }
-                ),
-                metadata_file,
-                indent=2,
-                sort_keys=True,
-            )
-        print(f"[Eval] Saved metadata to {metadata_path}")
+            policy_metadata = {
+                "episode_idx": episode_idx,
+                "policy_kwargs": policy_kwargs,
+                "l3_mde_config": l3_mde_config.__dict__,
+            }
+            if (episode_idx + 1) % args.checkpoint_episode_interval == 0:
+                make_checkpoint(
+                    policy=policy,
+                    data_path=data_path,
+                    episode_idx=episode_idx,
+                    metadata=policy_metadata,
+                )
+                
 
     except KeyboardInterrupt:
         print("[Main] Caught Keyboard Interrupt Command, Shutting Down...")
@@ -603,8 +474,6 @@ def main() -> None:
         print("[Error]", exc)
         traceback.print_exc()
     finally:
-        if wandb_run is not None:
-            wandb_run.finish()
         print("[Main] Shutting down...")
         try:
             simulation_app.close()
