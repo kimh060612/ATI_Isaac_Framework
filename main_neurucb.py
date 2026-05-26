@@ -54,8 +54,8 @@ VERBOSE = True
 DEBUG = True
 
 
-DEFAULT_SPEED_RANGES = "SLOW:0.0:0.4,NORMAL:0.9:1.2,FAST:1.5:1.8,SUPER_FAST:1.9:2.1"
-DEFAULT_LIGHT_RANGES = "DARK:100:300,DIM:500:600,NORMAL:1000:1200,BRIGHT:4000:4200,SUPER_BRIGHT:9000:9200"
+DEFAULT_SPEED_RANGES = "SLOW:0.0:0.4,NORMAL:0.9:1.2,FAST:1.5:1.7,SUPER_FAST:1.9:2.1"
+DEFAULT_LIGHT_RANGES = "DARK:100:300,DIM:500:600,NORMAL:1000:1100,BRIGHT:4000:4200,SUPER_BRIGHT:9000:9200"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -437,13 +437,13 @@ def main() -> None:
                             syn_data=syn_data_cache,
                             lap_idx=episode_idx,
                         )
-                        syn_data_cache = {
-                            "rgb": [],
-                            "depth": [],
-                            "bbox": [],
-                            "pred_depth": [],
-                            "imu": [],
-                        }
+                    syn_data_cache = {
+                        "rgb": [],
+                        "depth": [],
+                        "bbox": [],
+                        "pred_depth": [],
+                        "imu": [],
+                    }
 
             policy_metadata = {
                 "episode_idx": episode_idx,

@@ -50,7 +50,7 @@ RANDOM_SEED = 42
 VERBOSE = True
 
 
-DEFAULT_SPEED_RANGES = "SUPER_FAST:1.2:2.0"
+DEFAULT_SPEED_RANGES = "NORMAL:0.2:1.0,SUPER_FAST:1.2:2.0"
 DEFAULT_LIGHT_RANGES = "DARK:100:300,NORMAL:1000:1200,BRIGHT:4000:4200"
 
 
@@ -566,13 +566,13 @@ def main() -> None:
                             syn_data=syn_data_cache,
                             lap_idx=global_step,
                         )
-                        syn_data_cache = {
-                            "rgb": [],
-                            "depth": [],
-                            "bbox": [],
-                            "pred_depth": [],
-                            "imu": [],
-                        }
+                    syn_data_cache = {
+                        "rgb": [],
+                        "depth": [],
+                        "bbox": [],
+                        "pred_depth": [],
+                        "imu": [],
+                    }
 
         summary = summarize_records(eval_records)
         records_path, summary_path = save_eval_outputs(data_path, eval_records, summary)

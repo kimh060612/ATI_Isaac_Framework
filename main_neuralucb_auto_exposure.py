@@ -57,7 +57,7 @@ DEBUG = True
 
 # DEFAULT_SPEED_RANGES = "SLOW:0.0:0.4,NORMAL:0.9:1.2,FAST:1.5:1.8,SUPER_FAST:1.9:2.1"
 # DEFAULT_LIGHT_RANGES = "DARK:100:300,DIM:500:600,NORMAL:1000:1200,BRIGHT:4000:4200,SUPER_BRIGHT:9000:9200"
-DEFAULT_SPEED_RANGES = "SUPER_FAST:1.2:2.0"
+DEFAULT_SPEED_RANGES = "NORMAL:0.2:1.0,SUPER_FAST:1.2:2.0"
 DEFAULT_LIGHT_RANGES = "DARK:100:300,NORMAL:1000:1200,BRIGHT:4000:4200"
 
 
@@ -66,7 +66,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--exp_name", type=str, default="atil2l3_kaya_neurucb_oracle")
     parser.add_argument("--reward_type", type=str, default="oracle", choices=["flipped", "test_time_augment", "oracle"])
     parser.add_argument("--data_path", type=str, default="/home/kimh060612/ATI_research/dataset")
-    parser.add_argument("--num_episode", type=int, default=200, help="Total scenario episodes if num_scenario_repeats is not set.")
+    parser.add_argument("--num_episode", type=int, default=1, help="Total scenario episodes if num_scenario_repeats is not set.")
     parser.add_argument("--lap_period", type=int, default=200, help="Rendered policy-training steps per scenario episode.")
     parser.add_argument("--exp_ratio", type=float, default=0.5, help="UCB exploration bonus alpha.")
     parser.add_argument("--device", type=str, default="cuda")
