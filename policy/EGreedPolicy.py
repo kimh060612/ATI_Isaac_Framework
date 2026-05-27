@@ -18,8 +18,8 @@ class L2SharedEGreedyRGBCamPolicy(BaseCMABPolicy):
     previous control step.
     """
 
-    MOTION_STATES = ("STATIC", "SLOW", "NORMAL", "FAST", "SHAKE")
-    LIGHT_STATES = ("DARK", "DIM", "NORMAL", "BRIGHT", "OUTDOOR")
+    MOTION_STATES = ("SLOW", "NORMAL", "FAST", "SUPER_FAST")
+    LIGHT_STATES = ("DARK", "DIM", "NORMAL", "BRIGHT", "SUPER_BRIGHT")
 
     ACTIONS: Tuple[Tuple[int, int], ...] = (
         (0, 0),
@@ -55,8 +55,8 @@ class L2SharedEGreedyRGBCamPolicy(BaseCMABPolicy):
         epsilon_decay: float = 0.995,
         learning_rate: float = 0.1,
         initial_expected_reward: float = 1.0,
-        motion_thresholds: Tuple[float, float, float, float] = (0.08, 0.18, 0.32, 0.45),
-        light_thresholds: Tuple[float, float, float, float] = (500.0, 2000.0, 4500.0, 7500.0),
+        motion_thresholds: Tuple[float, float, float, float] = (4.0, 7.0, 11.0, 14.0),
+        light_thresholds: Tuple[float, float, float, float] = (400.0, 800.0, 2000.0, 6000.0),
         alpha: float = 1.0,
         lambda_reg: float = 1.0,
         random_seed: Optional[int] = None,
@@ -71,6 +71,10 @@ class L2SharedEGreedyRGBCamPolicy(BaseCMABPolicy):
         self.learning_rate = float(learning_rate)
         self.initial_expected_reward = float(initial_expected_reward)
         self.motion_thresholds = motion_thresholds
+        self.motion_max = 18.0
+        self.motion_min = 0.0
+        self.light_max = 9500.0
+        self.light_min = 0.0
         self.light_thresholds = light_thresholds
 
         super().__init__(
@@ -185,10 +189,10 @@ class L2SharedEGreedyRGBCamPolicy(BaseCMABPolicy):
         motion_value = abs(float(context_information["angular_velocity"]))
         light_value = float(context_information["light_intensity"])
 
-        motion_min = 0.0
-        motion_max = float(self.motion_thresholds[-1])
-        light_min = max(1.0, float(self.light_thresholds[0]))
-        light_max = float(self.light_thresholds[-1])
+        motion_min = self.motion_min
+        motion_max = self.motion_max
+        light_min = max(1.0, self.light_min)
+        light_max = self.light_max
 
         target_exposure_motion = self._linear_map_clipped(
             value=motion_value,
