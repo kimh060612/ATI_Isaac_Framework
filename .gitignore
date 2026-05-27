@@ -7,3 +7,4 @@ custom_usd/*
 imagenet*.txt
 wandb
 .vscode/*
+exposure_s2rgap_data.py
