@@ -1,10 +1,11 @@
 """
-Scenario-wise epsilon-greedy sensor-control training in Isaac Sim.
+Lap-level epsilon-greedy sensor-control training in Isaac Sim.
 
-Each coarse scenario owns an epsilon-greedy table policy during training.  At
-checkpoint/evaluation time the scenario policies are consolidated into one
-expected-reward table, then that consolidated policy is used for inference
-without further updates.
+This script follows the Android ATI control protocol more closely than the
+per-frame bandit runners: M simulation steps define one lap, camera settings
+are held for that lap, and the policy is updated once from an aggregated lap
+reward.  Context is always derived from IMU + scene light, while the scenario
+trajectory is used only to drive the robot and lighting schedule.
 """
 
 ## Basic imports: Must be here.
@@ -45,6 +46,8 @@ from policy import (
     L2SharedEGreedyRGBCamPolicy,
     SensorParamSpace,
     episode_bank,
+    load_heuristic_memory,
+    save_heuristic_memory,
 )
 from scene import ATIDepthScene
 
@@ -59,13 +62,13 @@ DEFAULT_LIGHT_RANGES = "DARK:100:300,DIM:500:600,NORMAL:1000:1100,BRIGHT:4000:42
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="ATI scenario-wise epsilon-greedy sensor control in Isaac Sim")
+    parser = argparse.ArgumentParser(description="ATI lap-level epsilon-greedy sensor control in Isaac Sim")
     parser.add_argument("--exp_name", type=str, default="atil2l3_kaya_egreedy_oracle")
     parser.add_argument("--reward_type", type=str, default="oracle", choices=["flipped", "test_time_augment", "oracle"])
     parser.add_argument("--data_path", type=str, default="/home/kimh060612/ATI_research/dataset")
-    parser.add_argument("--num_episode", type=int, default=200, help="Number of full scenario-bank training passes.")
-    parser.add_argument("--lap_period", type=int, default=200, help="Rendered policy-training steps per scenario episode.")
-    parser.add_argument("--num_inference_episode", type=int, default=1, help="Full scenario-bank inference passes after training.")
+    parser.add_argument("--num_episode", type=int, default=200, help="Number of training laps repeated per context.")
+    parser.add_argument("--lap_period", type=int, default=20, help="M simulation steps that define one lap.")
+    parser.add_argument("--num_inference_episode", type=int, default=1, help="Number of inference laps repeated per context.")
     parser.add_argument("--skip_inference", action="store_true")
     parser.add_argument("--policy_variant", type=str, default="egreedy", choices=["egreedy"])
     parser.add_argument("--epsilon_start", type=float, default=0.5)
@@ -75,19 +78,21 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--initial_expected_reward", type=float, default=1.0)
     parser.add_argument("--exp_ratio", type=float, default=1.0, help="Kept for BaseCMABPolicy compatibility.")
     parser.add_argument("--lambda_reg", type=float, default=1.0)
-    parser.add_argument("--checkpoint_episode_interval", type=int, default=1)
+    parser.add_argument("--lap_reward_top_percent", type=float, default=20.0, help="Average the top K percent of rewards in a lap.")
+    parser.add_argument("--warmup_steps", type=int, default=20, help="Simulation steps before policy learning/evaluation starts.")
+    parser.add_argument("--heuristic_update_threshold", type=int, default=30)
+    parser.add_argument("--heuristic_blend_alpha", type=float, default=0.35)
+    parser.add_argument("--heuristic_memory_path", type=str, default=None)
+    parser.add_argument(
+        "--checkpoint_episode_interval",
+        type=int,
+        default=1,
+        help="Save a checkpoint after every N completed contexts. Kept as a legacy argument name.",
+    )
     parser.add_argument("--scenario_repeat_type", type=str, default="sin", choices=["sin", "step"])
     parser.add_argument("--speed_ranges", type=str, default=DEFAULT_SPEED_RANGES)
     parser.add_argument("--light_ranges", type=str, default=DEFAULT_LIGHT_RANGES)
     parser.add_argument("--angular_speed_scale", type=float, default=float(np.pi / 12), help="Scale scenario speed before robot_control.")
-    parser.add_argument("--device", type=str, default="cuda")
-    parser.add_argument(
-        "--speed_context_source",
-        type=str,
-        default="scenario",
-        choices=["scenario", "imu"],
-        help="Use scenario angular velocity or scaled IMU gyro magnitude for EGreedy state binning.",
-    )
     parser.add_argument(
         "--imu_speed_context_scale",
         type=float,
@@ -95,6 +100,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Scale observed gyro_magnitude into the scenario speed unit. Defaults to 1 / angular_speed_scale.",
     )
     parser.add_argument("--tie_break_random", action="store_true", help="Randomly break equal-score ties during inference.")
+    parser.add_argument("--device", type=str, default="cuda")
     parser.add_argument("--disable_wandb", action="store_true")
     parser.add_argument("--save_data", action="store_true")
     return parser
@@ -216,28 +222,102 @@ def resolve_imu_speed_context_scale(args) -> float:
 
 def build_egreedy_context(
     raw_policy_context: dict,
-    env_context: dict,
     *,
-    speed_context_source: str,
+    fallback_light: float,
+    fallback_speed: float,
     imu_speed_context_scale: float,
 ) -> dict:
-    fallback_speed = float(env_context.get("angular_velocity", 0.0))
-    if speed_context_source == "imu":
-        gyro = float(raw_policy_context.get("gyro_magnitude", np.nan))
-        angular_velocity = abs(gyro) * float(imu_speed_context_scale)
-        if not np.isfinite(angular_velocity):
-            angular_velocity = fallback_speed
-    else:
-        angular_velocity = fallback_speed
+    gyro = float(raw_policy_context.get("gyro_magnitude", np.nan))
+    angular_velocity = abs(gyro) * float(imu_speed_context_scale)
+    if not np.isfinite(angular_velocity):
+        angular_velocity = abs(float(fallback_speed))
 
-    light_intensity = float(raw_policy_context.get("light_intensity", env_context.get("light_intensity", 1.0)))
+    light_intensity = float(raw_policy_context.get("light_intensity", fallback_light))
     if not np.isfinite(light_intensity):
-        light_intensity = float(env_context.get("light_intensity", 1.0))
+        light_intensity = float(fallback_light)
 
     return {
         **raw_policy_context,
         "angular_velocity": float(angular_velocity),
         "light_intensity": float(light_intensity),
+        "imu_gyro_magnitude": float(0.0 if not np.isfinite(gyro) else gyro),
+        "imu_speed_context_scale": float(imu_speed_context_scale),
+    }
+
+
+def summarize_context_samples(samples: list[dict]) -> dict:
+    if not samples:
+        return {
+            "angular_velocity": 0.0,
+            "light_intensity": 1.0,
+            "acceleration_magnitude": 0.0,
+            "gyro_magnitude": 0.0,
+            "imu_gyro_magnitude": 0.0,
+            "num_context_samples": 0.0,
+        }
+
+    numeric_keys = sorted(
+        {
+            key
+            for sample in samples
+            for key, value in sample.items()
+            if isinstance(value, (int, float, np.integer, np.floating, bool))
+        }
+    )
+    summary = {
+        key: float(np.mean([float(sample.get(key, 0.0)) for sample in samples]))
+        for key in numeric_keys
+    }
+    summary["angular_velocity"] = float(np.mean([float(sample["angular_velocity"]) for sample in samples]))
+    summary["light_intensity"] = float(np.mean([float(sample["light_intensity"]) for sample in samples]))
+    summary["num_context_samples"] = float(len(samples))
+    return summary
+
+
+def top_percent_reward_info(reward_history: list[dict], top_percent: float) -> dict:
+    if not reward_history:
+        return {"reward": 0.0}
+
+    top_percent = float(np.clip(top_percent, 0.0, 100.0))
+    if top_percent <= 0.0:
+        top_percent = 100.0
+    rewards = np.asarray([float(item.get("reward", 0.0)) for item in reward_history], dtype=np.float64)
+    top_count = max(1, int(np.ceil(len(rewards) * top_percent / 100.0)))
+    top_indices = np.argsort(rewards)[-top_count:]
+
+    keys = sorted(
+        {
+            key
+            for item in reward_history
+            for key, value in item.items()
+            if isinstance(value, (int, float, np.integer, np.floating, bool))
+        }
+    )
+    payload = {
+        key: float(np.mean([float(reward_history[int(idx)].get(key, 0.0)) for idx in top_indices]))
+        for key in keys
+    }
+    payload["reward"] = float(np.mean(rewards[top_indices]))
+    payload["top_percent"] = float(top_percent)
+    payload["top_count"] = float(top_count)
+    payload["num_lap_rewards"] = float(len(reward_history))
+    return payload
+
+
+def mean_numeric_metrics(metrics_history: list[dict]) -> dict:
+    if not metrics_history:
+        return {}
+    keys = sorted(
+        {
+            key
+            for item in metrics_history
+            for key, value in item.items()
+            if isinstance(value, (int, float, np.integer, np.floating, bool))
+        }
+    )
+    return {
+        key: float(np.mean([float(item.get(key, 0.0)) for item in metrics_history]))
+        for key in keys
     }
 
 
@@ -273,7 +353,13 @@ def make_egreedy_policy(
     return policy
 
 
-def policy_metadata(args, motion_thresholds: tuple[float, ...], light_thresholds: tuple[float, ...], range_limits: dict) -> dict:
+def policy_metadata(
+    args,
+    motion_thresholds: tuple[float, ...],
+    light_thresholds: tuple[float, ...],
+    range_limits: dict,
+    heuristic_memory_path: str,
+) -> dict:
     return {
         "policy_type": "L2SharedEGreedyRGBCamPolicy",
         "policy_variant": args.policy_variant,
@@ -285,54 +371,22 @@ def policy_metadata(args, motion_thresholds: tuple[float, ...], light_thresholds
         "initial_expected_reward": args.initial_expected_reward,
         "alpha": args.exp_ratio,
         "lambda_reg": args.lambda_reg,
+        "lap_period": args.lap_period,
+        "training_laps_per_context": args.num_episode,
+        "inference_laps_per_context": args.num_inference_episode,
+        "lap_reward_top_percent": args.lap_reward_top_percent,
+        "warmup_steps": args.warmup_steps,
+        "heuristic_update_threshold": args.heuristic_update_threshold,
+        "heuristic_blend_alpha": args.heuristic_blend_alpha,
+        "heuristic_memory_path": heuristic_memory_path,
         "speed_ranges": args.speed_ranges,
         "light_ranges": args.light_ranges,
         "motion_thresholds": list(motion_thresholds),
         "light_thresholds": list(light_thresholds),
         "range_limits": range_limits,
-        "speed_context_source": args.speed_context_source,
+        "context_source": "imu_gyro_magnitude_plus_scene_light",
         "imu_speed_context_scale": resolve_imu_speed_context_scale(args),
     }
-
-
-def consolidate_egreedy_policies(
-    scenario_policies: dict[str, L2SharedEGreedyRGBCamPolicy],
-    consolidated_policy: L2SharedEGreedyRGBCamPolicy,
-) -> L2SharedEGreedyRGBCamPolicy:
-    all_states = set(consolidated_policy.expected_rewards.keys())
-    for policy in scenario_policies.values():
-        all_states.update(policy.expected_rewards.keys())
-
-    total_update_count = 0
-    epsilons = []
-    for policy in scenario_policies.values():
-        total_update_count += int(policy.update_count)
-        epsilons.append(float(policy.current_epsilon))
-
-    for state in sorted(all_states):
-        weighted_rewards = np.zeros(consolidated_policy.num_actions, dtype=np.float64)
-        merged_counts = np.zeros(consolidated_policy.num_actions, dtype=np.int64)
-        for policy in scenario_policies.values():
-            policy._ensure_state(state)
-            counts = policy.action_counts[state].astype(np.int64)
-            rewards = policy.expected_rewards[state].astype(np.float64)
-            weighted_rewards += rewards * counts
-            merged_counts += counts
-
-        rewards = np.full(
-            consolidated_policy.num_actions,
-            consolidated_policy.initial_expected_reward,
-            dtype=np.float64,
-        )
-        observed_mask = merged_counts > 0
-        rewards[observed_mask] = weighted_rewards[observed_mask] / merged_counts[observed_mask]
-        consolidated_policy.expected_rewards[state] = rewards
-        consolidated_policy.action_counts[state] = merged_counts
-
-    consolidated_policy.update_count = total_update_count
-    consolidated_policy.current_epsilon = float(np.mean(epsilons)) if epsilons else consolidated_policy.epsilon_min
-    consolidated_policy.pending_update = None
-    return consolidated_policy
 
 
 def json_ready(value):
@@ -390,43 +444,50 @@ def egreedy_policy_payload(policy: L2SharedEGreedyRGBCamPolicy, include_history:
 
 def save_policy_bundle(
     checkpoint_path: str,
-    consolidated_policy: L2SharedEGreedyRGBCamPolicy,
-    scenario_policies: dict[str, L2SharedEGreedyRGBCamPolicy],
+    policy: L2SharedEGreedyRGBCamPolicy,
     metadata: dict,
+    heuristic_offsets: dict[str, tuple[float, float]],
+    state_update_counts: dict[str, int],
 ) -> str:
     checkpoint_path = os.path.abspath(checkpoint_path)
     os.makedirs(os.path.dirname(checkpoint_path), exist_ok=True)
     payload = {
         "metadata": metadata,
-        "consolidated_policy": egreedy_policy_payload(consolidated_policy),
-        "scenario_policies": {
-            name: egreedy_policy_payload(policy)
-            for name, policy in sorted(scenario_policies.items())
+        "policy": egreedy_policy_payload(policy),
+        "heuristic_offsets": {
+            state: [float(offset[0]), float(offset[1])]
+            for state, offset in sorted(heuristic_offsets.items())
+        },
+        "state_update_counts": {
+            state: int(count)
+            for state, count in sorted(state_update_counts.items())
         },
     }
     with open(checkpoint_path, "w", encoding="utf-8") as f:
         json.dump(json_ready(payload), f, indent=2, sort_keys=True)
-    print(f"[Checkpoint] Saved EGreedy policy bundle to {checkpoint_path}")
+    print(f"[Checkpoint] Saved EGreedy policy to {checkpoint_path}")
     return checkpoint_path
 
 
 def make_checkpoint(
-    consolidated_policy: L2SharedEGreedyRGBCamPolicy,
-    scenario_policies: dict[str, L2SharedEGreedyRGBCamPolicy],
+    policy: L2SharedEGreedyRGBCamPolicy,
     data_path: str,
-    episode_idx: int,
+    checkpoint_idx: int,
     metadata: dict,
+    heuristic_offsets: dict[str, tuple[float, float]],
+    state_update_counts: dict[str, int],
 ) -> str:
     checkpoint_path = os.path.join(
         data_path,
         "checkpoints",
-        f"egreedy_policy_episode_{episode_idx + 1:04d}.json",
+        f"egreedy_policy_context_{checkpoint_idx + 1:04d}.json",
     )
     return save_policy_bundle(
         checkpoint_path=checkpoint_path,
-        consolidated_policy=consolidated_policy,
-        scenario_policies=scenario_policies,
+        policy=policy,
         metadata=metadata,
+        heuristic_offsets=heuristic_offsets,
+        state_update_counts=state_update_counts,
     )
 
 
@@ -497,6 +558,237 @@ def reset_sensor_to_midpoint(scene: ATIDepthScene, sensor_param_space: SensorPar
     return exposure_idx, iso_idx
 
 
+def select_and_apply_lap_action(
+    *,
+    scene: ATIDepthScene,
+    policy: L2SharedEGreedyRGBCamPolicy,
+    sensor_param_space: SensorParamSpace,
+    context_summary: dict,
+    heuristic_offsets: dict[str, tuple[float, float]],
+    tie_break_random: bool,
+    is_infer_mode: bool,
+) -> tuple[dict, int, int, int, int, str]:
+    base_exposure_idx, base_iso_idx, base_state = policy.calculate_base_indices(
+        context_information=context_summary,
+        heuristic_offsets=heuristic_offsets,
+    )
+    selection = policy.select_action(
+        context_information={
+            **context_summary,
+            "exposure_idx": base_exposure_idx,
+            "iso_idx": base_iso_idx,
+        },
+        tie_break_random=tie_break_random,
+        is_infer_mode=is_infer_mode,
+    )
+    next_exposure_idx, next_iso_idx = policy.transition(
+        base_exposure_idx,
+        base_iso_idx,
+        selection["chosen_action"],
+    )
+    scene.sensor_control(
+        control_parameters={
+            "iso": sensor_param_space.iso_values[next_iso_idx],
+            "shutter_time": sensor_param_space.exposure_values[next_exposure_idx],
+        }
+    )
+    return selection, base_exposure_idx, base_iso_idx, next_exposure_idx, next_iso_idx, base_state
+
+
+def initialize_lap_context(
+    *,
+    scene: ATIDepthScene,
+    scenario,
+    angular_speed_scale: float,
+    imu_speed_context_scale: float,
+) -> dict:
+    env_context = scenario.step(0)
+    scene.control_light_intensity(env_context["light_intensity"])
+    scene.robot_control(
+        time=scene.get_simulation_current_time,
+        control_parameters={
+            "angular_velocity": float(env_context["angular_velocity"]) * float(angular_speed_scale),
+        },
+    )
+    syn_data = scene.step(render=False)
+    raw_context = get_policy_context(scene, syn_data if isinstance(syn_data, dict) else None)
+    return build_egreedy_context(
+        raw_context,
+        fallback_light=float(env_context["light_intensity"]),
+        fallback_speed=float(env_context["angular_velocity"]),
+        imu_speed_context_scale=imu_speed_context_scale,
+    )
+
+
+def run_warmup(
+    *,
+    scene: ATIDepthScene,
+    context_ranges: list[dict],
+    args,
+) -> None:
+    if args.warmup_steps <= 0 or not context_ranges:
+        return
+    warmup_scenario = episode_bank(
+        context_ranges=context_ranges[:1],
+        scenario_period=max(args.warmup_steps, 1),
+        repeat_type=args.scenario_repeat_type,
+        random_seed=RANDOM_SEED,
+        shuffle=False,
+    )[0]
+    print(f"[Warmup] Running {args.warmup_steps} simulation steps before lap training.")
+    for warmup_step in range(args.warmup_steps):
+        if not simulation_app._app.is_running() or simulation_app.is_exiting():
+            break
+        env_context = warmup_scenario.step(warmup_step)
+        scene.control_light_intensity(env_context["light_intensity"])
+        scene.robot_control(
+            time=scene.get_simulation_current_time,
+            control_parameters={
+                "angular_velocity": float(env_context["angular_velocity"]) * args.angular_speed_scale,
+            },
+        )
+        scene.step(render=False)
+
+
+def run_lap(
+    *,
+    phase: str,
+    scene: ATIDepthScene,
+    scenario,
+    lap_idx: int,
+    context_idx: int,
+    context_lap_idx: int,
+    global_step: int,
+    args,
+    sensor_param_space: SensorParamSpace,
+    mde_model: L3PLayerDepthAnythingv2,
+    reward_function,
+    l3_mde_config: L3MDEConfig,
+    imu_speed_context_scale: float,
+    curr_exposure_idx: int,
+    curr_iso_idx: int,
+) -> tuple[dict, list[dict], dict, int, int, int, dict]:
+    reward_history: list[dict] = []
+    metric_history: list[dict] = []
+    context_samples: list[dict] = []
+    step_records: list[dict] = []
+    syn_data_cache = {
+        "rgb": [],
+        "depth": [],
+        "bbox": [],
+        "pred_depth": [],
+        "imu": [],
+    }
+
+    for lap_step in range(args.lap_period):
+        if not simulation_app._app.is_running() or simulation_app.is_exiting():
+            break
+
+        env_context = scenario.step(lap_step)
+        scene.control_light_intensity(env_context["light_intensity"])
+        scene.robot_control(
+            time=scene.get_simulation_current_time,
+            control_parameters={
+                "angular_velocity": float(env_context["angular_velocity"]) * args.angular_speed_scale,
+            },
+        )
+
+        syn_data = scene.step(render=True)
+        rgb_image = syn_data.get("rgb", None)
+        gt_depth = syn_data.get(scene.get_anno("depth"), None)
+        bbox_data = syn_data.get(scene.get_anno("2d_bounding_box"), None)
+        imu_data = syn_data.get("imu_sensor", None)
+        raw_policy_context = get_policy_context(scene, syn_data)
+        policy_context = build_egreedy_context(
+            raw_policy_context,
+            fallback_light=float(env_context["light_intensity"]),
+            fallback_speed=float(env_context["angular_velocity"]),
+            imu_speed_context_scale=imu_speed_context_scale,
+        )
+        context_samples.append(policy_context)
+
+        if rgb_image is None or rgb_image.size == 0:
+            if VERBOSE:
+                print(f"Warning: Received empty RGB image during {phase}. Skipping step reward.")
+            global_step += 1
+            continue
+        if gt_depth is None or gt_depth.size == 0:
+            if VERBOSE:
+                print(f"Warning: Received empty ground-truth depth image during {phase}. Skipping step reward.")
+            global_step += 1
+            continue
+
+        syn_data_cache["rgb"].append(rgb_image)
+        syn_data_cache["depth"].append(gt_depth)
+        syn_data_cache["bbox"].append(bbox_data)
+        syn_data_cache["imu"].append(imu_data)
+
+        pred_depths, metric_info = mde_model.predict_depth([Image.fromarray(rgb_image)], gt_depth)
+        syn_data_cache["pred_depth"].append(
+            pred_depths if isinstance(pred_depths, np.ndarray) else pred_depths[0]
+        )
+        observation_info = build_observation_info(
+            reward_type=l3_mde_config.reward_type,
+            rgb_image=rgb_image,
+            pred_depths=pred_depths,
+            metric_info=metric_info,
+        )
+        reward_info = reward_function(**observation_info)
+        reward = float(reward_info.get("reward", 0.0))
+        reward_history.append(reward_info)
+        metric_history.append(metric_info)
+
+        step_record = {
+            "phase": phase,
+            "lap_idx": lap_idx,
+            "episode_idx": context_lap_idx,
+            "context_idx": context_idx,
+            "context_lap_idx": context_lap_idx,
+            "lap_step": lap_step,
+            "global_step": global_step,
+            "scenario_name": scenario.name,
+            "scenario_speed_label": scenario.speed_label,
+            "scenario_light_label": scenario.light_label,
+            "scenario_light_intensity": float(env_context["light_intensity"]),
+            "scenario_speed": float(env_context["angular_velocity"]),
+            "scenario_robot_angular_velocity": float(env_context["angular_velocity"]) * args.angular_speed_scale,
+            "context_acceleration_magnitude": float(policy_context.get("acceleration_magnitude", 0.0)),
+            "context_gyro_magnitude": float(policy_context.get("gyro_magnitude", 0.0)),
+            "context_light_intensity": float(policy_context.get("light_intensity", 0.0)),
+            "context_egreedy_angular_velocity": float(policy_context.get("angular_velocity", 0.0)),
+            "exposure_idx": curr_exposure_idx,
+            "iso_idx": curr_iso_idx,
+            "reward": reward,
+            "reward_info": reward_info,
+            "metric_info": metric_info,
+        }
+        step_records.append(step_record)
+        global_step += 1
+
+    lap_reward_info = top_percent_reward_info(reward_history, args.lap_reward_top_percent)
+    lap_metric_info = mean_numeric_metrics(metric_history)
+    lap_context = summarize_context_samples(context_samples)
+    lap_summary = {
+        "phase": phase,
+        "lap_idx": lap_idx,
+        "episode_idx": context_lap_idx,
+        "context_idx": context_idx,
+        "context_lap_idx": context_lap_idx,
+        "scenario_name": scenario.name,
+        "scenario_speed_label": scenario.speed_label,
+        "scenario_light_label": scenario.light_label,
+        "num_valid_reward_steps": len(reward_history),
+        "num_context_samples": len(context_samples),
+        "reward": float(lap_reward_info.get("reward", 0.0)),
+        "reward_info": lap_reward_info,
+        "metric_info": lap_metric_info,
+        "context_summary": lap_context,
+        "exposure_idx": curr_exposure_idx,
+        "iso_idx": curr_iso_idx,
+    }
+    return lap_summary, step_records, syn_data_cache, global_step, curr_exposure_idx, curr_iso_idx, lap_context
+
+
 def main() -> None:
     args = build_parser().parse_args()
     set_deterministic(RANDOM_SEED)
@@ -513,6 +805,10 @@ def main() -> None:
         f"experiment_{args.exp_name}_{args.reward_type}_{args.lap_period}steps_policy_{args.policy_variant}",
     )
     os.makedirs(data_path, exist_ok=True)
+    heuristic_memory_path = args.heuristic_memory_path or os.path.join(
+        data_path,
+        f"heuristic_offsets_{args.exp_name}_{args.reward_type}.json",
+    )
 
     configure_isaac_sim_logging()
     kaya_config = ATIBaseRobotConfig(robot_name="kaya")
@@ -534,21 +830,10 @@ def main() -> None:
 
     sensor_param_space = SensorParamSpace()
     curr_exposure_idx, curr_iso_idx = reset_sensor_to_midpoint(scene, sensor_param_space)
+    run_warmup(scene=scene, context_ranges=context_ranges, args=args)
 
     reward_function = select_reward_function(args.reward_type)
-    scenario_policies = {
-        scenario_config["name"]: make_egreedy_policy(
-            args,
-            sensor_param_space,
-            reward_function,
-            motion_thresholds,
-            light_thresholds,
-            range_limits,
-            random_seed=RANDOM_SEED + idx,
-        )
-        for idx, scenario_config in enumerate(context_ranges)
-    }
-    consolidated_policy = make_egreedy_policy(
+    policy = make_egreedy_policy(
         args,
         sensor_param_space,
         reward_function,
@@ -557,6 +842,8 @@ def main() -> None:
         range_limits,
         random_seed=RANDOM_SEED,
     )
+    heuristic_offsets, state_update_counts = load_heuristic_memory(heuristic_memory_path)
+    print(f"[LTM] Loaded {len(heuristic_offsets)} heuristic offsets from {heuristic_memory_path}")
 
     l3_mde_config = L3MDEConfig(
         reward_type=args.reward_type,
@@ -572,402 +859,288 @@ def main() -> None:
     mde_model = L3PLayerDepthAnythingv2(l3_config=l3_mde_config, device=args.device)
     print(f"[Device] mde_device={mde_model.device} mde_pipeline_device={getattr(mde_model.model, 'device', '<unknown>')}")
 
-    train_max_steps = args.num_episode * len(context_ranges) * args.lap_period
-    infer_max_steps = args.num_inference_episode * len(context_ranges) * args.lap_period
+    train_max_laps = args.num_episode * len(context_ranges)
+    infer_max_laps = args.num_inference_episode * len(context_ranges)
+    max_steps = (train_max_laps + infer_max_laps) * args.lap_period
     wandb_run = None
     if not args.disable_wandb:
         wandb_run = initialize_wandb(
             policy_type=args.policy_variant,
             l3_model_name=l3_mde_config.model_name,
             context_len=args.lap_period,
-            max_laps=(args.num_episode + args.num_inference_episode) * len(context_ranges),
-            max_steps=train_max_steps + infer_max_steps,
+            max_laps=train_max_laps + infer_max_laps,
+            max_steps=max_steps,
             exp_name=args.exp_name,
         )
 
     global_step = 0
-    syn_data_cache = {
-        "rgb": [],
-        "depth": [],
-        "bbox": [],
-        "pred_depth": [],
-        "imu": [],
-    }
-    inference_records = []
+    train_lap_idx = 0
+    inference_records: list[dict] = []
 
     try:
-        for episode_idx in range(args.num_episode):
-            scenario_bank = episode_bank(
+        training_scenarios = episode_bank(
+            context_ranges=context_ranges,
+            scenario_period=args.lap_period,
+            repeat_type=args.scenario_repeat_type,
+            random_seed=RANDOM_SEED,
+            shuffle=True,
+        )
+        for context_idx, scenario in enumerate(training_scenarios):
+            for context_lap_idx in range(args.num_episode):
+                initial_context = initialize_lap_context(
+                    scene=scene,
+                    scenario=scenario,
+                    angular_speed_scale=args.angular_speed_scale,
+                    imu_speed_context_scale=imu_speed_context_scale,
+                )
+                selection, base_exposure_idx, base_iso_idx, curr_exposure_idx, curr_iso_idx, base_state = select_and_apply_lap_action(
+                    scene=scene,
+                    policy=policy,
+                    sensor_param_space=sensor_param_space,
+                    context_summary=initial_context,
+                    heuristic_offsets=heuristic_offsets,
+                    tie_break_random=True,
+                    is_infer_mode=False,
+                )
+
+                lap_summary, step_records, syn_data_cache, global_step, curr_exposure_idx, curr_iso_idx, lap_context = run_lap(
+                    phase="train",
+                    scene=scene,
+                    scenario=scenario,
+                    lap_idx=train_lap_idx,
+                    context_idx=context_idx,
+                    context_lap_idx=context_lap_idx,
+                    global_step=global_step,
+                    args=args,
+                    sensor_param_space=sensor_param_space,
+                    mde_model=mde_model,
+                    reward_function=reward_function,
+                    l3_mde_config=l3_mde_config,
+                    imu_speed_context_scale=imu_speed_context_scale,
+                    curr_exposure_idx=curr_exposure_idx,
+                    curr_iso_idx=curr_iso_idx,
+                )
+
+                lap_reward = float(lap_summary["reward"])
+                update_info = None
+                if lap_summary["num_valid_reward_steps"] > 0:
+                    update_info = policy.update_parameters(
+                        (str(selection["state"]), int(selection["chosen_action_idx"])),
+                        lap_reward,
+                    )
+                    if policy.update_long_term_memory(
+                        heuristic_offsets=heuristic_offsets,
+                        state_update_counts=state_update_counts,
+                        update_info=update_info,
+                        update_threshold=args.heuristic_update_threshold,
+                        blend_alpha=args.heuristic_blend_alpha,
+                    ):
+                        save_heuristic_memory(
+                            heuristic_memory_path,
+                            heuristic_offsets,
+                            state_update_counts,
+                        )
+                        lap_summary["ltm_updated"] = True
+                    else:
+                        lap_summary["ltm_updated"] = False
+
+                lap_summary.update(
+                    {
+                        "base_state": base_state,
+                        "state": selection["state"],
+                        "base_exposure_idx": base_exposure_idx,
+                        "base_iso_idx": base_iso_idx,
+                        "action": selection["chosen_action"],
+                        "action_description": selection["chosen_description"],
+                        "chosen_expected_reward": float(selection["chosen_expected_reward"]),
+                        "chosen_count": int(selection["chosen_count"]),
+                        "epsilon": float(selection["epsilon"]),
+                        "selection_mode": selection["mode"],
+                        "context_idx": context_idx,
+                        "context_lap_idx": context_lap_idx,
+                        "laps_per_context": args.num_episode,
+                        "update_info": update_info,
+                    }
+                )
+                policy.history.append(lap_summary)
+
+                if VERBOSE:
+                    print(
+                        f"Train Lap {train_lap_idx} | Context {context_idx + 1}/{len(training_scenarios)} | "
+                        f"Context Lap {context_lap_idx + 1}/{args.num_episode} | "
+                        f"Scenario: {scenario.name} | State: {selection['state']} | "
+                        f"Action: {selection['chosen_action']} | "
+                        f"Top-{args.lap_reward_top_percent:g}% Reward: {lap_reward:.4f} | "
+                        f"Epsilon: {selection['epsilon']:.4f}"
+                    )
+
+                if wandb_run is not None:
+                    wandb_run.log(
+                        {
+                            **flatten_metrics(lap_summary["reward_info"], f"train/{scenario.name}"),
+                            **flatten_metrics(lap_summary["metric_info"], f"train/{scenario.name}"),
+                            **flatten_metrics(update_info, f"train/{scenario.name}"),
+                            **flatten_metrics(lap_context, f"train/{scenario.name}/context"),
+                            f"train/{scenario.name}/lap_reward": lap_reward,
+                            f"train/{scenario.name}/base_exposure_idx": base_exposure_idx,
+                            f"train/{scenario.name}/base_iso_idx": base_iso_idx,
+                            f"train/{scenario.name}/exposure_idx": curr_exposure_idx,
+                            f"train/{scenario.name}/iso_idx": curr_iso_idx,
+                            f"train/{scenario.name}/chosen_expected_reward": float(selection["chosen_expected_reward"]),
+                            f"train/{scenario.name}/chosen_count": int(selection["chosen_count"]),
+                            f"train/{scenario.name}/epsilon": float(selection["epsilon"]),
+                            f"train/{scenario.name}/explore_flag": float(selection["mode"] == "explore"),
+                            f"train/{scenario.name}/ltm_updated": float(bool(lap_summary.get("ltm_updated", False))),
+                            "global_step": global_step,
+                            "context_idx": context_idx,
+                            "context_lap_idx": context_lap_idx,
+                            "lap_idx": train_lap_idx,
+                        }
+                    )
+
+                if args.save_data and any(len(values) > 0 for values in syn_data_cache.values()):
+                    save_synthetic_data(
+                        DATA_PATH=data_path,
+                        syn_data=syn_data_cache,
+                        lap_idx=train_lap_idx,
+                    )
+
+                train_lap_idx += 1
+
+            checkpoint_metadata = {
+                **policy_metadata(args, motion_thresholds, light_thresholds, range_limits, heuristic_memory_path),
+                "context_idx": context_idx,
+                "scenario_name": scenario.name,
+                "completed_train_laps": train_lap_idx,
+                "l3_mde_config": l3_mde_config.__dict__,
+            }
+            if args.checkpoint_episode_interval > 0 and (context_idx + 1) % args.checkpoint_episode_interval == 0:
+                make_checkpoint(
+                    policy=policy,
+                    data_path=data_path,
+                    checkpoint_idx=context_idx,
+                    metadata=checkpoint_metadata,
+                    heuristic_offsets=heuristic_offsets,
+                    state_update_counts=state_update_counts,
+                )
+
+        final_metadata = {
+            **policy_metadata(args, motion_thresholds, light_thresholds, range_limits, heuristic_memory_path),
+            "completed_contexts": len(training_scenarios),
+            "completed_train_laps": train_lap_idx,
+            "l3_mde_config": l3_mde_config.__dict__,
+        }
+        save_heuristic_memory(heuristic_memory_path, heuristic_offsets, state_update_counts)
+        save_policy_bundle(
+            checkpoint_path=os.path.join(data_path, "checkpoints", "egreedy_policy_final.json"),
+            policy=policy,
+            metadata=final_metadata,
+            heuristic_offsets=heuristic_offsets,
+            state_update_counts=state_update_counts,
+        )
+
+        if not args.skip_inference and args.num_inference_episode > 0:
+            curr_exposure_idx, curr_iso_idx = reset_sensor_to_midpoint(scene, sensor_param_space)
+            run_warmup(scene=scene, context_ranges=context_ranges, args=args)
+            inference_lap_idx = 0
+            inference_scenarios = episode_bank(
                 context_ranges=context_ranges,
                 scenario_period=args.lap_period,
                 repeat_type=args.scenario_repeat_type,
                 random_seed=RANDOM_SEED,
-                shuffle=True,
+                shuffle=False,
             )
-            for scenario in scenario_bank:
-                scenario_policy = scenario_policies[scenario.name]
-                for episode_step in range(args.lap_period):
-                    if not simulation_app._app.is_running() or simulation_app.is_exiting():
-                        break
-
-                    env_context = scenario.step(episode_step)
-                    scene.control_light_intensity(env_context["light_intensity"])
-                    scene.robot_control(
-                        time=scene.get_simulation_current_time,
-                        control_parameters={
-                            "angular_velocity": float(env_context["angular_velocity"]) * args.angular_speed_scale,
-                        },
-                    )
-
-                    raw_policy_context = get_policy_context(scene)
-                    policy_context = build_egreedy_context(
-                        raw_policy_context,
-                        env_context,
-                        speed_context_source=args.speed_context_source,
+            for inference_context_idx, scenario in enumerate(inference_scenarios):
+                for inference_context_lap_idx in range(args.num_inference_episode):
+                    initial_context = initialize_lap_context(
+                        scene=scene,
+                        scenario=scenario,
+                        angular_speed_scale=args.angular_speed_scale,
                         imu_speed_context_scale=imu_speed_context_scale,
                     )
-                    context_information = {
-                        **policy_context,
-                        "exposure_idx": curr_exposure_idx,
-                        "iso_idx": curr_iso_idx,
-                    }
-                    selection = scenario_policy.select_action(
-                        context_information=context_information,
-                        tie_break_random=True,
+                    selection, base_exposure_idx, base_iso_idx, curr_exposure_idx, curr_iso_idx, base_state = select_and_apply_lap_action(
+                        scene=scene,
+                        policy=policy,
+                        sensor_param_space=sensor_param_space,
+                        context_summary=initial_context,
+                        heuristic_offsets=heuristic_offsets,
+                        tie_break_random=args.tie_break_random,
+                        is_infer_mode=True,
                     )
-                    action = selection["chosen_action"]
-                    prev_exposure_idx = curr_exposure_idx
-                    prev_iso_idx = curr_iso_idx
-                    next_exposure_idx, next_iso_idx = scenario_policy.transition(
-                        curr_exposure_idx,
-                        curr_iso_idx,
-                        action,
+
+                    lap_summary, step_records, syn_data_cache, global_step, curr_exposure_idx, curr_iso_idx, lap_context = run_lap(
+                        phase="inference",
+                        scene=scene,
+                        scenario=scenario,
+                        lap_idx=inference_lap_idx,
+                        context_idx=inference_context_idx,
+                        context_lap_idx=inference_context_lap_idx,
+                        global_step=global_step,
+                        args=args,
+                        sensor_param_space=sensor_param_space,
+                        mde_model=mde_model,
+                        reward_function=reward_function,
+                        l3_mde_config=l3_mde_config,
+                        imu_speed_context_scale=imu_speed_context_scale,
+                        curr_exposure_idx=curr_exposure_idx,
+                        curr_iso_idx=curr_iso_idx,
                     )
-                    scene.sensor_control(
-                        control_parameters={
-                            "iso": sensor_param_space.iso_values[next_iso_idx],
-                            "shutter_time": sensor_param_space.exposure_values[next_exposure_idx],
+                    lap_summary.update(
+                        {
+                            "base_state": base_state,
+                            "state": selection["state"],
+                            "base_exposure_idx": base_exposure_idx,
+                            "base_iso_idx": base_iso_idx,
+                            "action": selection["chosen_action"],
+                            "action_description": selection["chosen_description"],
+                            "chosen_expected_reward": float(selection["chosen_expected_reward"]),
+                            "chosen_count": int(selection["chosen_count"]),
+                            "epsilon": float(selection["epsilon"]),
+                            "selection_mode": selection["mode"],
+                            "context_idx": inference_context_idx,
+                            "context_lap_idx": inference_context_lap_idx,
+                            "laps_per_context": args.num_inference_episode,
                         }
                     )
-                    curr_exposure_idx = next_exposure_idx
-                    curr_iso_idx = next_iso_idx
-
-                    syn_data = scene.step(render=True)
-                    rgb_image = syn_data.get("rgb", None)
-                    gt_depth = syn_data.get(scene.get_anno("depth"), None)
-                    bbox_data = syn_data.get(scene.get_anno("2d_bounding_box"), None)
-                    imu_data = syn_data.get("imu_sensor", None)
-                    if rgb_image is None or rgb_image.size == 0:
-                        if VERBOSE:
-                            print("Warning: Received empty RGB image. Skipping update.")
-                        continue
-                    if gt_depth is None or gt_depth.size == 0:
-                        if VERBOSE:
-                            print("Warning: Received empty ground-truth depth image. Skipping update.")
-                        continue
-
-                    syn_data_cache["rgb"].append(rgb_image)
-                    syn_data_cache["depth"].append(gt_depth)
-                    syn_data_cache["bbox"].append(bbox_data)
-                    syn_data_cache["imu"].append(imu_data)
-
-                    pred_depths, metric_info = mde_model.predict_depth([Image.fromarray(rgb_image)], gt_depth)
-                    syn_data_cache["pred_depth"].append(
-                        pred_depths if isinstance(pred_depths, np.ndarray) else pred_depths[0]
-                    )
-                    observation_info = build_observation_info(
-                        reward_type=l3_mde_config.reward_type,
-                        rgb_image=rgb_image,
-                        pred_depths=pred_depths,
-                        metric_info=metric_info,
-                    )
-                    reward_info = reward_function(**observation_info)
-                    reward = float(reward_info.get("reward", 0.0))
-                    update_info = scenario_policy.update_parameters(
-                        (str(selection["state"]), int(selection["chosen_action_idx"])),
-                        reward,
-                    )
-                    record = {
-                        "phase": "train",
-                        "episode_idx": episode_idx,
-                        "episode_step": episode_step,
-                        "global_step": global_step,
-                        "scenario_name": scenario.name,
-                        "scenario_speed_label": scenario.speed_label,
-                        "scenario_light_label": scenario.light_label,
-                        "scenario_light_intensity": float(env_context["light_intensity"]),
-                        "scenario_speed": float(env_context["angular_velocity"]),
-                        "scenario_robot_angular_velocity": float(env_context["angular_velocity"]) * args.angular_speed_scale,
-                        "context_acceleration_magnitude": float(raw_policy_context.get("acceleration_magnitude", 0.0)),
-                        "context_gyro_magnitude": float(raw_policy_context.get("gyro_magnitude", 0.0)),
-                        "context_light_intensity": float(policy_context.get("light_intensity", 0.0)),
-                        "context_egreedy_angular_velocity": float(policy_context.get("angular_velocity", 0.0)),
-                        "prev_exposure_idx": prev_exposure_idx,
-                        "prev_iso_idx": prev_iso_idx,
-                        "exposure_idx": curr_exposure_idx,
-                        "iso_idx": curr_iso_idx,
-                        "state": selection["state"],
-                        "action": action,
-                        "chosen_score": float(selection["chosen_expected_reward"]),
-                        "chosen_mean": float(selection["chosen_expected_reward"]),
-                        "chosen_bonus": 0.0,
-                        "chosen_count": int(selection["chosen_count"]),
-                        "epsilon": float(selection["epsilon"]),
-                        "selection_mode": selection["mode"],
-                        "reward": reward,
-                        "reward_info": reward_info,
-                        "metric_info": metric_info,
-                        "update_info": update_info,
-                    }
-                    scenario_policy.history.append(record)
+                    inference_records.append(lap_summary)
 
                     if VERBOSE:
                         print(
-                            f"Train Episode {episode_idx} Step {episode_step} | "
-                            f"Scenario: {scenario.name} | "
-                            f"State: {selection['state']} | "
-                            f"Action: {action} | "
-                            f"Reward: {reward:.4f} | "
-                            f"Epsilon: {selection['epsilon']:.4f}"
+                            f"Infer Lap {inference_lap_idx} | Context {inference_context_idx + 1}/{len(inference_scenarios)} | "
+                            f"Context Lap {inference_context_lap_idx + 1}/{args.num_inference_episode} | "
+                            f"Scenario: {scenario.name} | State: {selection['state']} | "
+                            f"Action: {selection['chosen_action']} | "
+                            f"Top-{args.lap_reward_top_percent:g}% Reward: {float(lap_summary['reward']):.4f}"
                         )
 
                     if wandb_run is not None:
                         wandb_run.log(
                             {
-                                **flatten_metrics(reward_info, f"train/{scenario.name}"),
-                                **flatten_metrics(metric_info, f"train/{scenario.name}"),
-                                **flatten_metrics(update_info, f"train/{scenario.name}"),
-                                f"train/{scenario.name}/reward": reward,
-                                f"train/{scenario.name}/exposure_idx": curr_exposure_idx,
-                                f"train/{scenario.name}/iso_idx": curr_iso_idx,
-                                f"train/{scenario.name}/chosen_expected_reward": float(selection["chosen_expected_reward"]),
-                                f"train/{scenario.name}/chosen_count": int(selection["chosen_count"]),
-                                f"train/{scenario.name}/epsilon": float(selection["epsilon"]),
-                                f"train/{scenario.name}/explore_flag": float(selection["mode"] == "explore"),
-                                f"train/{scenario.name}/cmd_ang_vel": float(env_context["angular_velocity"]) * args.angular_speed_scale,
-                                f"train/{scenario.name}/cmd_light_intensity": float(env_context["light_intensity"]),
-                                f"train/{scenario.name}/egreedy_angular_velocity": float(policy_context.get("angular_velocity", 0.0)),
-                                f"train/{scenario.name}/gyro_magnitude": float(raw_policy_context.get("gyro_magnitude", 0.0)),
-                                f"train/{scenario.name}/light_intensity": float(policy_context.get("light_intensity", 0.0)),
+                                **flatten_metrics(lap_summary["reward_info"], f"inference/{scenario.name}"),
+                                **flatten_metrics(lap_summary["metric_info"], f"inference/{scenario.name}"),
+                                **flatten_metrics(lap_context, f"inference/{scenario.name}/context"),
+                                f"inference/{scenario.name}/lap_reward": float(lap_summary["reward"]),
+                                f"inference/{scenario.name}/base_exposure_idx": base_exposure_idx,
+                                f"inference/{scenario.name}/base_iso_idx": base_iso_idx,
+                                f"inference/{scenario.name}/exposure_idx": curr_exposure_idx,
+                                f"inference/{scenario.name}/iso_idx": curr_iso_idx,
+                                f"inference/{scenario.name}/chosen_expected_reward": float(selection["chosen_expected_reward"]),
+                                f"inference/{scenario.name}/chosen_count": int(selection["chosen_count"]),
                                 "global_step": global_step,
-                                "episode_idx": episode_idx,
-                                "episode_step": episode_step,
-                                f"train/{scenario.name}/scenario_step": episode_idx * args.lap_period + episode_step,
+                                "inference_context_idx": inference_context_idx,
+                                "inference_context_lap_idx": inference_context_lap_idx,
+                                "inference_lap_idx": inference_lap_idx,
                             }
                         )
 
-                    global_step += 1
-                    if args.save_data:
+                    if args.save_data and any(len(values) > 0 for values in syn_data_cache.values()):
                         save_synthetic_data(
                             DATA_PATH=data_path,
                             syn_data=syn_data_cache,
-                            lap_idx=global_step,
-                        )
-                    syn_data_cache = {
-                        "rgb": [],
-                        "depth": [],
-                        "bbox": [],
-                        "pred_depth": [],
-                        "imu": [],
-                    }
-
-            consolidate_egreedy_policies(scenario_policies, consolidated_policy)
-            checkpoint_metadata = {
-                **policy_metadata(args, motion_thresholds, light_thresholds, range_limits),
-                "episode_idx": episode_idx,
-                "l3_mde_config": l3_mde_config.__dict__,
-                "num_scenario_policies": len(scenario_policies),
-            }
-            if args.checkpoint_episode_interval > 0 and (episode_idx + 1) % args.checkpoint_episode_interval == 0:
-                make_checkpoint(
-                    consolidated_policy=consolidated_policy,
-                    scenario_policies=scenario_policies,
-                    data_path=data_path,
-                    episode_idx=episode_idx,
-                    metadata=checkpoint_metadata,
-                )
-
-        consolidate_egreedy_policies(scenario_policies, consolidated_policy)
-        final_metadata = {
-            **policy_metadata(args, motion_thresholds, light_thresholds, range_limits),
-            "episode_idx": args.num_episode - 1,
-            "l3_mde_config": l3_mde_config.__dict__,
-            "num_scenario_policies": len(scenario_policies),
-        }
-        save_policy_bundle(
-            checkpoint_path=os.path.join(data_path, "checkpoints", "egreedy_policy_final.json"),
-            consolidated_policy=consolidated_policy,
-            scenario_policies=scenario_policies,
-            metadata=final_metadata,
-        )
-
-        if not args.skip_inference and args.num_inference_episode > 0:
-            curr_exposure_idx, curr_iso_idx = reset_sensor_to_midpoint(scene, sensor_param_space)
-            for inference_episode_idx in range(args.num_inference_episode):
-                scenario_bank = episode_bank(
-                    context_ranges=context_ranges,
-                    scenario_period=args.lap_period,
-                    repeat_type=args.scenario_repeat_type,
-                    random_seed=RANDOM_SEED,
-                    shuffle=False,
-                )
-                for scenario in scenario_bank:
-                    for episode_step in range(args.lap_period):
-                        if not simulation_app._app.is_running() or simulation_app.is_exiting():
-                            break
-
-                        env_context = scenario.step(episode_step)
-                        scene.control_light_intensity(env_context["light_intensity"])
-                        scene.robot_control(
-                            time=scene.get_simulation_current_time,
-                            control_parameters={
-                                "angular_velocity": float(env_context["angular_velocity"]) * args.angular_speed_scale,
-                            },
+                            lap_idx=train_lap_idx + inference_lap_idx,
                         )
 
-                        raw_policy_context = get_policy_context(scene)
-                        policy_context = build_egreedy_context(
-                            raw_policy_context,
-                            env_context,
-                            speed_context_source=args.speed_context_source,
-                            imu_speed_context_scale=imu_speed_context_scale,
-                        )
-                        context_information = {
-                            **policy_context,
-                            "exposure_idx": curr_exposure_idx,
-                            "iso_idx": curr_iso_idx,
-                        }
-                        selection = consolidated_policy.select_action(
-                            context_information=context_information,
-                            tie_break_random=args.tie_break_random,
-                            is_infer_mode=True,
-                        )
-                        action = selection["chosen_action"]
-                        prev_exposure_idx = curr_exposure_idx
-                        prev_iso_idx = curr_iso_idx
-                        next_exposure_idx, next_iso_idx = consolidated_policy.transition(
-                            curr_exposure_idx,
-                            curr_iso_idx,
-                            action,
-                        )
-                        scene.sensor_control(
-                            control_parameters={
-                                "iso": sensor_param_space.iso_values[next_iso_idx],
-                                "shutter_time": sensor_param_space.exposure_values[next_exposure_idx],
-                            }
-                        )
-                        curr_exposure_idx = next_exposure_idx
-                        curr_iso_idx = next_iso_idx
-
-                        syn_data = scene.step(render=True)
-                        rgb_image = syn_data.get("rgb", None)
-                        gt_depth = syn_data.get(scene.get_anno("depth"), None)
-                        bbox_data = syn_data.get(scene.get_anno("2d_bounding_box"), None)
-                        imu_data = syn_data.get("imu_sensor", None)
-                        if rgb_image is None or rgb_image.size == 0:
-                            if VERBOSE:
-                                print("Warning: Received empty RGB image during inference. Skipping step.")
-                            continue
-                        if gt_depth is None or gt_depth.size == 0:
-                            if VERBOSE:
-                                print("Warning: Received empty ground-truth depth image during inference. Skipping step.")
-                            continue
-
-                        syn_data_cache["rgb"].append(rgb_image)
-                        syn_data_cache["depth"].append(gt_depth)
-                        syn_data_cache["bbox"].append(bbox_data)
-                        syn_data_cache["imu"].append(imu_data)
-
-                        pred_depths, metric_info = mde_model.predict_depth([Image.fromarray(rgb_image)], gt_depth)
-                        syn_data_cache["pred_depth"].append(
-                            pred_depths if isinstance(pred_depths, np.ndarray) else pred_depths[0]
-                        )
-                        observation_info = build_observation_info(
-                            reward_type=l3_mde_config.reward_type,
-                            rgb_image=rgb_image,
-                            pred_depths=pred_depths,
-                            metric_info=metric_info,
-                        )
-                        reward_info = reward_function(**observation_info)
-                        reward = float(reward_info.get("reward", 0.0))
-                        record = {
-                            "phase": "inference",
-                            "episode_idx": inference_episode_idx,
-                            "episode_step": episode_step,
-                            "global_step": global_step,
-                            "scenario_name": scenario.name,
-                            "scenario_speed_label": scenario.speed_label,
-                            "scenario_light_label": scenario.light_label,
-                            "scenario_light_intensity": float(env_context["light_intensity"]),
-                            "scenario_speed": float(env_context["angular_velocity"]),
-                            "scenario_robot_angular_velocity": float(env_context["angular_velocity"]) * args.angular_speed_scale,
-                            "context_acceleration_magnitude": float(raw_policy_context.get("acceleration_magnitude", 0.0)),
-                            "context_gyro_magnitude": float(raw_policy_context.get("gyro_magnitude", 0.0)),
-                            "context_light_intensity": float(policy_context.get("light_intensity", 0.0)),
-                            "context_egreedy_angular_velocity": float(policy_context.get("angular_velocity", 0.0)),
-                            "prev_exposure_idx": prev_exposure_idx,
-                            "prev_iso_idx": prev_iso_idx,
-                            "exposure_idx": curr_exposure_idx,
-                            "iso_idx": curr_iso_idx,
-                            "state": selection["state"],
-                            "action": action,
-                            "chosen_score": float(selection["chosen_expected_reward"]),
-                            "chosen_mean": float(selection["chosen_expected_reward"]),
-                            "chosen_bonus": 0.0,
-                            "chosen_count": int(selection["chosen_count"]),
-                            "epsilon": float(selection["epsilon"]),
-                            "selection_mode": selection["mode"],
-                            "reward": reward,
-                            "reward_info": reward_info,
-                            "metric_info": metric_info,
-                        }
-                        inference_records.append(record)
-
-                        if VERBOSE:
-                            print(
-                                f"Infer Episode {inference_episode_idx} Step {episode_step} | "
-                                f"Scenario: {scenario.name} | "
-                                f"State: {selection['state']} | "
-                                f"Action: {action} | "
-                                f"Reward: {reward:.4f}"
-                            )
-
-                        if wandb_run is not None:
-                            wandb_run.log(
-                                {
-                                    **flatten_metrics(reward_info, f"inference/{scenario.name}"),
-                                    **flatten_metrics(metric_info, f"inference/{scenario.name}"),
-                                    f"inference/{scenario.name}/reward": reward,
-                                    f"inference/{scenario.name}/exposure_idx": curr_exposure_idx,
-                                    f"inference/{scenario.name}/iso_idx": curr_iso_idx,
-                                    f"inference/{scenario.name}/chosen_expected_reward": float(selection["chosen_expected_reward"]),
-                                    f"inference/{scenario.name}/chosen_count": int(selection["chosen_count"]),
-                                    f"inference/{scenario.name}/cmd_ang_vel": float(env_context["angular_velocity"]) * args.angular_speed_scale,
-                                    f"inference/{scenario.name}/cmd_light_intensity": float(env_context["light_intensity"]),
-                                    f"inference/{scenario.name}/egreedy_angular_velocity": float(policy_context.get("angular_velocity", 0.0)),
-                                    f"inference/{scenario.name}/gyro_magnitude": float(raw_policy_context.get("gyro_magnitude", 0.0)),
-                                    f"inference/{scenario.name}/light_intensity": float(policy_context.get("light_intensity", 0.0)),
-                                    "global_step": global_step,
-                                    "inference_episode_idx": inference_episode_idx,
-                                    "episode_step": episode_step,
-                                    f"inference/{scenario.name}/scenario_step": inference_episode_idx * args.lap_period + episode_step,
-                                }
-                            )
-
-                        global_step += 1
-                        if args.save_data:
-                            save_synthetic_data(
-                                DATA_PATH=data_path,
-                                syn_data=syn_data_cache,
-                                lap_idx=global_step,
-                            )
-                        syn_data_cache = {
-                            "rgb": [],
-                            "depth": [],
-                            "bbox": [],
-                            "pred_depth": [],
-                            "imu": [],
-                        }
+                    inference_lap_idx += 1
 
             summary = summarize_records(inference_records)
             records_path, summary_path = save_eval_outputs(
@@ -975,7 +1148,7 @@ def main() -> None:
                 inference_records,
                 summary,
             )
-            print(f"[Inference] mean_reward={summary['mean_reward']:.4f} num_steps={summary['num_steps']}")
+            print(f"[Inference] mean_lap_reward={summary['mean_reward']:.4f} num_laps={summary['num_steps']}")
             print(f"[Inference] Saved records to {records_path}")
             print(f"[Inference] Saved summary to {summary_path}")
 
@@ -985,6 +1158,10 @@ def main() -> None:
         print("[Error]", exc)
         traceback.print_exc()
     finally:
+        try:
+            save_heuristic_memory(heuristic_memory_path, heuristic_offsets, state_update_counts)
+        except Exception:
+            pass
         if wandb_run is not None:
             wandb_run.finish()
         print("[Main] Shutting down...")
