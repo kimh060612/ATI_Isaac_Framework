@@ -1,9 +1,9 @@
 """
-Per-step NeuralUCB/LinUCB sensor-control training in Isaac Sim.
+Per-step auto-exposure sensor-control evaluation in Isaac Sim.
 
-Training is organized as scenario episodes.  Each episode holds one coarse
-scenario, for example SLOW x DARK, and moves only within a small contiguous
-context range so the policy learns smoothly over nearby IMU/light contexts.
+Evaluation is organized as scenario laps.  Each coarse scenario, for example
+SLOW x DARK, is evaluated for num_episode laps, and each lap contains
+lap_period rendered steps within that scenario context.
 """
 
 ## Basic imports: Must be here.
@@ -62,12 +62,12 @@ DEFAULT_LIGHT_RANGES = "DARK:100:300,NORMAL:1000:1200,BRIGHT:4000:4200"
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="ATI per-step NeuralUCB sensor control in Isaac Sim")
+    parser = argparse.ArgumentParser(description="ATI per-step auto-exposure sensor control evaluation in Isaac Sim")
     parser.add_argument("--exp_name", type=str, default="atil2l3_kaya_neurucb_oracle")
     parser.add_argument("--reward_type", type=str, default="oracle", choices=["flipped", "test_time_augment", "oracle"])
     parser.add_argument("--data_path", type=str, default="/home/kimh060612/ATI_research/dataset")
-    parser.add_argument("--num_episode", type=int, default=1, help="Total scenario episodes if num_scenario_repeats is not set.")
-    parser.add_argument("--lap_period", type=int, default=200, help="Rendered policy-training steps per scenario episode.")
+    parser.add_argument("--num_episode", type=int, default=1, help="Number of evaluation laps repeated per scenario.")
+    parser.add_argument("--lap_period", type=int, default=200, help="Rendered evaluation steps per scenario lap.")
     parser.add_argument("--exp_ratio", type=float, default=0.5, help="UCB exploration bonus alpha.")
     parser.add_argument("--device", type=str, default="cuda")
     parser.add_argument("--scenario_repeat_type", type=str, default="sin", choices=["sin", "step"])
@@ -134,6 +134,33 @@ def flatten_metrics(metrics: dict | None, prefix: str) -> dict:
         if isinstance(value, (int, float, np.integer, np.floating, bool)):
             payload[f"{prefix}/{key}"] = float(value)
     return payload
+
+
+def make_syn_data_cache() -> dict[str, list]:
+    return {
+        "rgb": [],
+        "depth": [],
+        "bbox": [],
+        "pred_depth": [],
+        "imu": [],
+    }
+
+
+def mean_numeric_metrics(metrics_history: list[dict]) -> dict:
+    if not metrics_history:
+        return {}
+    keys = sorted(
+        {
+            key
+            for item in metrics_history
+            for key, value in item.items()
+            if isinstance(value, (int, float, np.integer, np.floating, bool))
+        }
+    )
+    return {
+        key: float(np.mean([float(item.get(key, 0.0)) for item in metrics_history]))
+        for key in keys
+    }
 
 
 def print_device_debug(requested_device: str) -> None:
@@ -220,6 +247,7 @@ def main() -> None:
     random.seed(RANDOM_SEED)
     np.random.seed(RANDOM_SEED)
     print_device_debug(args.device)
+    context_ranges = build_context_ranges(args)
 
     data_path = os.path.join(
         args.data_path,
@@ -310,36 +338,35 @@ def main() -> None:
         policy_type="auto_exposure",
         l3_model_name=l3_mde_config.model_name,
         context_len=args.lap_period,
-        max_laps=args.num_episode * len(build_context_ranges(args)),
-        max_steps=args.num_episode * len(build_context_ranges(args)) * args.lap_period,
+        max_laps=args.num_episode * len(context_ranges),
+        max_steps=args.num_episode * len(context_ranges) * args.lap_period,
         exp_name=args.exp_name if not args.disable_wandb else None,
     )
 
     global_step = 0
-    syn_data_cache = {
-        "rgb": [],
-        "depth": [],
-        "bbox": [],
-        "pred_depth": [],
-        "imu": [],
-    }
+    eval_lap_idx = 0
     
     try:
-        # for episode_idx in range(total_episodes):
-        for episode_idx in range(args.num_episode):
-            scenario_bank = episode_bank(
-                context_ranges=build_context_ranges(args),
-                scenario_period=args.lap_period,
-                repeat_type=args.scenario_repeat_type,
-                random_seed=RANDOM_SEED,
-                shuffle=True,
-            )
-            for scenario in scenario_bank:
-                for episode_step in range(args.lap_period):
+        scenario_bank = episode_bank(
+            context_ranges=context_ranges,
+            scenario_period=args.lap_period,
+            repeat_type=args.scenario_repeat_type,
+            random_seed=RANDOM_SEED,
+            shuffle=True,
+        )
+        should_stop = False
+        for context_idx, scenario in enumerate(scenario_bank):
+            for context_lap_idx in range(args.num_episode):
+                syn_data_cache = make_syn_data_cache()
+                reward_history = []
+                metric_history = []
+
+                for lap_step in range(args.lap_period):
                     if not simulation_app._app.is_running() or simulation_app.is_exiting():
+                        should_stop = True
                         break
 
-                    env_context = scenario.step(episode_step)
+                    env_context = scenario.step(lap_step)
                     scene.control_light_intensity(env_context["light_intensity"])
                     scene.robot_control(
                         time=scene.get_simulation_current_time,
@@ -356,10 +383,12 @@ def main() -> None:
                     if rgb_image is None or rgb_image.size == 0:
                         if VERBOSE:
                             print("Warning: Received empty RGB image. Skipping update.")
+                        global_step += 1
                         continue
                     if gt_depth is None or gt_depth.size == 0:
                         if VERBOSE:
                             print("Warning: Received empty ground-truth depth image. Skipping update.")
+                        global_step += 1
                         continue
 
                     syn_data_cache["rgb"].append(rgb_image)
@@ -380,8 +409,10 @@ def main() -> None:
                     
                     reward_info = reward_function(**observation_info)
                     reward = float(reward_info.get("reward", 0.0))
+                    reward_history.append(reward_info)
+                    metric_history.append(metric_info)
                     
-                    policy_context = get_policy_context(scene)
+                    policy_context = get_policy_context(scene, syn_data)
                     curr_exposure_idx, curr_iso_idx = map_value_to_index(curr_exposure, curr_gain * ISO_BASE) 
                     h, w = rgb_image.shape[:2]
                     # mask = make_center_weight_mask(h, w, center_ratio=0.8)   
@@ -403,7 +434,9 @@ def main() -> None:
                     
                     if VERBOSE:
                         print(
-                            f"Episode {episode_idx} Step {episode_step} | "
+                            f"Eval Lap {eval_lap_idx} | Context {context_idx + 1}/{len(scenario_bank)} | "
+                            f"Context Lap {context_lap_idx + 1}/{args.num_episode} | "
+                            f"Step {lap_step} | "
                             f"Scenario: {scenario.name} | "
                             f"Reward: {reward:.4f}"
                         )
@@ -421,25 +454,56 @@ def main() -> None:
                                 f"{scenario.name}/gyro_magnitude": float(policy_context.get("gyro_magnitude", 0.0)),
                                 f"{scenario.name}/light_intensity": float(policy_context.get("light_intensity", 0.0)),
                                 "global_step": global_step,
-                                "episode_idx": episode_idx,
-                                "episode_step": episode_step,
-                                f"{scenario.name}/scenario_step": episode_idx * args.lap_period + episode_step
+                                "context_idx": context_idx,
+                                "context_lap_idx": context_lap_idx,
+                                "lap_idx": eval_lap_idx,
+                                "lap_step": lap_step,
+                                "episode_idx": context_lap_idx,
+                                "episode_step": lap_step,
+                                f"{scenario.name}/scenario_step": context_lap_idx * args.lap_period + lap_step
                             }
                         )
                     global_step += 1
-                    if args.save_data:
-                        save_synthetic_data(
-                            DATA_PATH=data_path,
-                            syn_data=syn_data_cache,
-                            lap_idx=episode_idx,
-                        )
-                        syn_data_cache = {
-                            "rgb": [],
-                            "depth": [],
-                            "bbox": [],
-                            "pred_depth": [],
-                            "imu": [],
+
+                lap_reward_info = mean_numeric_metrics(reward_history)
+                lap_metric_info = mean_numeric_metrics(metric_history)
+                lap_reward = float(lap_reward_info.get("reward", 0.0))
+
+                if VERBOSE:
+                    print(
+                        f"Eval Lap {eval_lap_idx} Summary | Context {context_idx + 1}/{len(scenario_bank)} | "
+                        f"Context Lap {context_lap_idx + 1}/{args.num_episode} | "
+                        f"Scenario: {scenario.name} | "
+                        f"Mean Reward: {lap_reward:.4f} | "
+                        f"Valid Steps: {len(reward_history)}/{args.lap_period}"
+                    )
+
+                if not args.disable_wandb:
+                    wandb_run.log(
+                        {
+                            **flatten_metrics(lap_reward_info, f"{scenario.name}/lap"),
+                            **flatten_metrics(lap_metric_info, f"{scenario.name}/lap_metrics"),
+                            f"{scenario.name}/lap_reward": lap_reward,
+                            f"{scenario.name}/num_valid_reward_steps": len(reward_history),
+                            "global_step": global_step,
+                            "context_idx": context_idx,
+                            "context_lap_idx": context_lap_idx,
+                            "lap_idx": eval_lap_idx,
                         }
+                    )
+
+                if args.save_data and any(len(values) > 0 for values in syn_data_cache.values()):
+                    save_synthetic_data(
+                        DATA_PATH=data_path,
+                        syn_data=syn_data_cache,
+                        lap_idx=eval_lap_idx,
+                    )
+
+                eval_lap_idx += 1
+                if should_stop:
+                    break
+            if should_stop:
+                break
                 
 
     except KeyboardInterrupt:

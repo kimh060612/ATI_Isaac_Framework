@@ -8,3 +8,4 @@ imagenet*.txt
 wandb
 .vscode/*
 exposure_s2rgap_data.py
+synthetic_data_camsweep.py
